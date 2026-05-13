@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "68158122127",
+    "project_id": "brata-722e5",
+    "storage_bucket": "brata-722e5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:68158122127:android:3a55c651bc6a150555a8fa",
+        "android_client_info": {
+          "package_name": "com.aguado.bratagame"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBrpk-T1_Ts0PHvUSAv39Unb2pyDO_Vv8E"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
