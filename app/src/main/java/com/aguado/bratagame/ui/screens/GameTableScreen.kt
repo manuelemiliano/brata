@@ -54,9 +54,17 @@ fun GameTableScreen(
         mutableStateOf<Pair<CartaEnMesa, CartaEnMesa>?>(null)
     }
 
+    // Swap pendiente para CAMBIAR_VIENDO (activa CardSwapAnimation)
+    var swapViendoPendiente by remember {
+        mutableStateOf<Pair<CartaEnMesa, CartaEnMesa>?>(null)
+    }
+
     var mostrarSelectorCartaPropia by remember { mutableStateOf(false) }
     var cartaEspiadaParaDescartar by remember { mutableStateOf<Carta?>(null) }
     var propietarioEspiadoId by remember { mutableStateOf("") }
+
+    // true mientras el jugador elige en la mesa con cu00e1l carta intercambiar (CAMBIAR VIENDO)
+    var modoSeleccionCambiarViendo by remember { mutableStateOf(false) }
 
     var cartasAlejadasVisibles by remember { mutableStateOf(true) }
 
@@ -95,12 +103,27 @@ fun GameTableScreen(
             ?.key ?: ""
     } else ""
 
-    // FIX 5: As — puede descartar la espiada si es igual a la activadora
-    // FIX 5: As — siempre puede CAMBIAR (cambiar viendo)
+    // As — puede descartar la espiada si su valor es igual al activador
     val puedeDescartarEspiada = estadoPoder.esMiPoder &&
             estadoPoder.estaEspiando &&
             cartaEspiada != null &&
             cartaEspiada.valor == salaActual.cartaPoderActiva?.valorCartaActivadora
+
+    // Durante CAMBIAR_VIENDO en modo selección inline:
+    // todas las cartas de la mesa se vuelven seleccionables (borde verde)
+    val estadoPoderEfectivo = if (
+        modoSeleccionCambiarViendo &&
+        estadoPoder.esMiPoder &&
+        estadoPoder.tipoPoder == TipoPoder.CAMBIAR_VIENDO
+    ) {
+        val todasLasCartasIds = salaActual.jugadores.values
+            .flatMap { it.cartas }
+            .map { it.id }
+            .toSet()
+        estadoPoder.copy(cartasSeleccionables = todasLasCartasIds)
+    } else {
+        estadoPoder
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0D3311))) {
 
@@ -127,7 +150,7 @@ fun GameTableScreen(
                     esObservador = esObservador,
                     rotacion = rotacion,
                     esTurnoActual = esTurnoOponente,
-                    estadoPoder = estadoPoder,
+                    estadoPoder = estadoPoderEfectivo,
                     cartaEspiadaId = estadoPoder.cartaEspiandoId,
                     // FIX 2: oponentes nunca ven sus cartas alejadas abiertas
                     cartasAlejadasVisibles = false,
@@ -141,6 +164,15 @@ fun GameTableScreen(
                             onSeleccionSinVer = { seleccionSinVer = it },
                             onSwapSinVerPendiente = { cartaA, cartaB ->
                                 swapSinVerPendiente = cartaA to cartaB
+                            },
+                            onSwapViendo = { espiada, destino ->
+                                swapViendoPendiente = espiada to destino
+                            },
+                            cartaEspiadaEnMesa = cartaEspiada?.let { c ->
+                                val propId = salaActual.jugadores.entries
+                                    .firstOrNull { e -> e.value.cartas.any { it.id == c.id } }
+                                    ?.key ?: ""
+                                CartaEnMesa(carta = c, posicion = 0, propietarioId = propId)
                             },
                             idSala = idSala
                         )
@@ -160,7 +192,7 @@ fun GameTableScreen(
                 esObservador = false,
                 rotacion = 0f,
                 esTurnoActual = estadoTurno.esMiTurno,
-                estadoPoder = estadoPoder,
+                estadoPoder = estadoPoderEfectivo,
                 cartaEspiadaId = estadoPoder.cartaEspiandoId,
                 // FIX 2: solo visibles durante el contador
                 cartasAlejadasVisibles = cartasAlejadasVisibles,
@@ -179,6 +211,15 @@ fun GameTableScreen(
                         onSeleccionSinVer = { seleccionSinVer = it },
                         onSwapSinVerPendiente = { cartaA, cartaB ->
                             swapSinVerPendiente = cartaA to cartaB
+                        },
+                        onSwapViendo = { espiada, destino ->
+                            swapViendoPendiente = espiada to destino
+                        },
+                        cartaEspiadaEnMesa = cartaEspiada?.let { c ->
+                            val propId = salaActual.jugadores.entries
+                                .firstOrNull { e -> e.value.cartas.any { it.id == c.id } }
+                                ?.key ?: ""
+                            CartaEnMesa(carta = c, posicion = 0, propietarioId = propId)
                         },
                         idSala = idSala
                     )
@@ -236,6 +277,28 @@ fun GameTableScreen(
             )
         }
 
+        // Animacion de intercambio CAMBIAR VIENDO
+        // La carta espiada y la carta destino se cruzan en la mesa (3s salto + 600ms cruce).
+        swapViendoPendiente?.let { par ->
+            CardSwapAnimation(
+                cartaA = par.first,
+                cartaB = par.second,
+                mostrarValorA = true,
+                mostrarValorB = false,
+                onAnimacionCompleta = { _, _ ->
+                    GameActions.confirmarCambioViendo(
+                        salaId = idSala,
+                        jugadorId = jugadorLocal.id,
+                        sala = salaActual,
+                        cartaEspiada = par.first,
+                        cartaDestino = par.second
+                    )
+                    modoSeleccionCambiarViendo = false
+                    swapViendoPendiente = null
+                }
+            )
+        }
+
         val cartaEnMano = yo.cartaEnMano
         if (cartaEnMano != null && !esObservador && !estadoPoder.estaEspiando) {
             val ultimaDescarte = salaActual.mazoDescarte.lastOrNull()
@@ -277,67 +340,37 @@ fun GameTableScreen(
             }
         }
 
-        // 6. HandPanel del espía — muestra carta espiada con botones
-        if (estadoPoder.esMiPoder && estadoPoder.estaEspiando && cartaEspiada != null) {
-            // FIX 5: As siempre tiene CAMBIAR además de REGRESAR
-            // ESPIAR solo tiene REGRESAR (y DESCARTAR si valores iguales)
+        // 6. Panel del espiá (ESPIAR) — solo REGRESAR / DESCARTAR
+        // CAMBIAR_VIENDO tiene su propio flujo inline (sección 6b).
+        val esEspiarPuro = estadoPoder.esMiPoder &&
+                estadoPoder.estaEspiando &&
+                cartaEspiada != null &&
+                estadoPoder.tipoPoder == TipoPoder.ESPIAR
+
+        if (esEspiarPuro) {
             val accionesEspia = mutableListOf<AccionMano>().apply {
                 add(AccionMano.REGRESAR)
                 if (puedeDescartarEspiada) add(AccionMano.DESCARTAR)
-                // As (CAMBIAR_VIENDO): puede cambiar la carta espiada por cualquiera
-                if (estadoPoder.tipoPoder == TipoPoder.CAMBIAR_VIENDO) {
-                    add(AccionMano.CAMBIAR)
-                }
             }
-
             val cartasEnMesa = yo.cartas.mapIndexed { index, carta ->
                 CartaEnMesa(carta = carta, posicion = index, propietarioId = jugadorLocal.id)
             }
-
             Box(
                 modifier = Modifier.fillMaxSize().padding(bottom = 160.dp),
                 contentAlignment = Alignment.BottomCenter
             ) {
                 HandPanel(
-                    cartaEnMano = cartaEspiada,
+                    cartaEnMano = cartaEspiada!!,
                     cartasDelJugador = cartasEnMesa,
                     accionesDisponibles = accionesEspia,
-                    onAccion = { accion, posicionDestino ->
+                    onAccion = { accion, _ ->
                         when (accion) {
-                            AccionMano.REGRESAR -> {
+                            AccionMano.REGRESAR ->
                                 GameActions.regresarCartaEspiada(idSala, jugadorLocal.id, salaActual)
-                            }
                             AccionMano.DESCARTAR -> {
                                 cartaEspiadaParaDescartar = cartaEspiada
                                 propietarioEspiadoId = propietarioCartaEspiada
                                 mostrarSelectorCartaPropia = true
-                            }
-                            // FIX 5: As — CAMBIAR activa selección de carta destino
-                            AccionMano.CAMBIAR -> {
-                                posicionDestino?.let { pos ->
-                                    // La carta espiada va a la posición elegida del jugador local
-                                    // La carta local en esa posición va al lugar de la espiada
-                                    val cartaLocalDestino = yo.cartas.getOrNull(pos)
-                                    if (cartaLocalDestino != null) {
-                                        val cartaEspiadaEnMesa = CartaEnMesa(
-                                            carta = cartaEspiada,
-                                            posicion = pos,
-                                            propietarioId = propietarioCartaEspiada
-                                        )
-                                        val cartaLocalEnMesa = CartaEnMesa(
-                                            carta = cartaLocalDestino,
-                                            posicion = pos,
-                                            propietarioId = jugadorLocal.id
-                                        )
-                                        GameActions.confirmarCambioViendo(
-                                            salaId = idSala,
-                                            jugadorId = jugadorLocal.id,
-                                            sala = salaActual,
-                                            cartaEspiada = cartaEspiadaEnMesa,
-                                            cartaDestino = cartaLocalEnMesa
-                                        )
-                                    }
-                                }
                             }
                             else -> Unit
                         }
@@ -346,6 +379,78 @@ fun GameTableScreen(
             }
         }
 
+        // 6b. CAMBIAR VIENDO — flujo inline sobre la mesa
+        // La carta espiada aparece a la izquierda del cuadrado local.
+        // Todas las cartas de la mesa se enmarcan en VERDE.
+        // El jugador toca cualquier carta verde → intercambio + animación.
+        val esCambiarViendo = estadoPoder.esMiPoder &&
+                estadoPoder.estaEspiando &&
+                cartaEspiada != null &&
+                estadoPoder.tipoPoder == TipoPoder.CAMBIAR_VIENDO
+
+        // Activar modo selección automáticamente al entrar al estado
+        if (esCambiarViendo && !modoSeleccionCambiarViendo) {
+            modoSeleccionCambiarViendo = true
+        }
+        if (!esCambiarViendo && modoSeleccionCambiarViendo) {
+            modoSeleccionCambiarViendo = false
+        }
+
+        if (esCambiarViendo) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = 24.dp),
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Carta espiada flotando a la izquierda
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "◆ CARTA ESPIADA",
+                            color = Color(0xFFB39DDB),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        CartaVisual(
+                            abierta = true,
+                            valor = cartaEspiada!!.valor,
+                            palo = mappingPalo(cartaEspiada.palo),
+                            modifier = Modifier.size(60.dp, 84.dp)
+                        )
+                    }
+                    // Instrucciones + botón cancelar
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "Toca una carta verde",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "para intercambiar con la espiada",
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontSize = 11.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                modoSeleccionCambiarViendo = false
+                                GameActions.regresarCartaEspiada(idSala, jugadorLocal.id, salaActual)
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Text("CANCELAR / REGRESAR")
+                        }
+                    }
+                }
+            }
+        }
         // 7. Alerta de adelantado
         val adelantadoActual = adelantadoId
         if (adelantadoActual != null) {
@@ -782,6 +887,10 @@ private fun manejarCartaTocada(
     seleccionSinVer: List<CartaEnMesa>,
     onSeleccionSinVer: (List<CartaEnMesa>) -> Unit,
     onSwapSinVerPendiente: (CartaEnMesa, CartaEnMesa) -> Unit,
+    // CAMBIAR_VIENDO: callback cuando el jugador elige la carta destino en la mesa
+    onSwapViendo: ((cartaEspiada: CartaEnMesa, cartaDestino: CartaEnMesa) -> Unit)? = null,
+    // Carta actualmente espiada (necesaria para el swap viendo)
+    cartaEspiadaEnMesa: CartaEnMesa? = null,
     idSala: String
 ){
     if (!estadoPoder.hayPoderActivo || !estadoPoder.esMiPoder) return
@@ -792,7 +901,15 @@ private fun manejarCartaTocada(
         }
         TipoPoder.CAMBIAR_VIENDO -> {
             if (!estadoPoder.estaEspiando) {
+                // Primera fase: espiar la carta elegida
                 GameActions.espiarCarta(idSala, jugadorLocalId, cartaEnMesa.carta.id)
+            } else {
+                // Segunda fase (modo selección inline activo):
+                // el jugador tocó una carta verde → disparar animación + swap
+                val espiada = cartaEspiadaEnMesa
+                if (espiada != null && onSwapViendo != null) {
+                    onSwapViendo(espiada, cartaEnMesa)
+                }
             }
         }
         TipoPoder.CAMBIAR_SIN_VER -> {

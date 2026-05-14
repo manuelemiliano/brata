@@ -177,9 +177,11 @@ object GameRules {
             "J" -> 11
             "Q" -> 12
             "K" -> if (carta.palo == "treboles" || carta.palo == "picas") 13 else 1
-            "JKR" -> 0 // El comodín no debería estar en juego sin valor asignado
+            // El comodín sin definir vale 20 puntos (penalización máxima).
+            // Si fue definido antes del conteo, su valor ya fue reemplazado
+            // en Firebase y no llega como "JKR".
+            "JKR" -> 20
             else -> carta.valor.toIntOrNull() ?: 0 // 3-10 valen su número
         }
     }
 }
-

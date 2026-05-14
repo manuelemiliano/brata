@@ -17,104 +17,101 @@ import com.aguado.bratagame.CartaEnMesa
 
 private enum class FaseSwap {
     REPOSO,   // sin animación
-    SALTO,    // ambas cartas saltan hacia arriba
-    CRUCE,    // las cartas se cruzan hacia su destino
+    SALTO,    // ambas cartas saltan hacia arriba (3 segundos)
+    CRUCE,    // las cartas se cruzan hacia su destino (600ms)
     COMPLETO  // animación terminada → llamar callback
 }
 
 // ─────────────────────────────────────────────
 // CARD SWAP ANIMATION
 //
-// Muestra dos cartas y anima su intercambio:
-//   1. Ambas saltan (offset Y negativo)
-//   2. Se desplazan cruzándose hacia la posición contraria
-//   3. Llama onAnimacionCompleta con propietarios intercambiados
+// Función reutilizable para CUALQUIER intercambio en el juego:
+//   poder CAMBIAR VIENDO, CAMBIAR SIN VER, o cualquier otro swap.
 //
-// Este composable se coloca como overlay sobre la mesa.
-// GameTableScreen lo activa cuando Firebase reporta un intercambio.
+// Secuencia visual:
+//   1. Ambas cartas saltan (offset Y negativo) — 3 segundos
+//      para que todos los jugadores vean cuáles se van a cambiar
+//   2. Las cartas se cruzan en arco hacia la posición contraria (600ms)
+//   3. Callback onAnimacionCompleta → ejecutar la escritura en Firebase
+//
+// Parámetros:
+//   cartaA / cartaB       → las dos cartas que se intercambian
+//   mostrarValorA/B       → el jugador local ve sus propias cartas abiertas
+//   onAnimacionCompleta   → se llama al final con los propietarios ya cruzados
+//
+// Uso desde GameTableScreen:
+//   swapPendiente = cartaA to cartaB
+//   → CardSwapAnimation se renderiza como overlay
+//   → onAnimacionCompleta escribe en Firebase y limpia swapPendiente
 // ─────────────────────────────────────────────
 
 @Composable
 fun CardSwapAnimation(
     cartaA: CartaEnMesa,
     cartaB: CartaEnMesa,
-    // true = mostrar el valor de la carta (solo para el jugador local y observadores)
     mostrarValorA: Boolean = false,
     mostrarValorB: Boolean = false,
     onAnimacionCompleta: (nuevaA: CartaEnMesa, nuevaB: CartaEnMesa) -> Unit
 ) {
     var fase by remember { mutableStateOf(FaseSwap.SALTO) }
 
-    // Posiciones absolutas en pantalla de cada carta (se capturan con onGloballyPositioned)
     var posicionA by remember { mutableStateOf(Offset.Zero) }
     var posicionB by remember { mutableStateOf(Offset.Zero) }
 
-    // ── Animaciones ────────────────────────────
+    // ── Animación de salto (ambas suben mientras el jugador decide) ──────
 
-    // Salto: desplazamiento Y hacia arriba
+    val alturaJump = -28f
+
     val saltoA by animateFloatAsState(
-        targetValue = if (fase == FaseSwap.SALTO || fase == FaseSwap.CRUCE) -24f else 0f,
-        animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing),
+        targetValue = if (fase == FaseSwap.SALTO || fase == FaseSwap.CRUCE) alturaJump else 0f,
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
         label = "saltoA"
     )
     val saltoB by animateFloatAsState(
-        targetValue = if (fase == FaseSwap.SALTO || fase == FaseSwap.CRUCE) -24f else 0f,
-        animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing),
+        targetValue = if (fase == FaseSwap.SALTO || fase == FaseSwap.CRUCE) alturaJump else 0f,
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
         label = "saltoB"
     )
 
-    // Cruce: progreso 0→1 del desplazamiento hacia la posición contraria
+    // ── Animación de cruce (600ms) ────────────────────────────────────────
+
     val progresoSwap by animateFloatAsState(
         targetValue = if (fase == FaseSwap.CRUCE) 1f else 0f,
-        animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
-        finishedListener = {
-            if (fase == FaseSwap.CRUCE) {
-                fase = FaseSwap.COMPLETO
-            }
-        },
+        animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing),
+        finishedListener = { if (fase == FaseSwap.CRUCE) fase = FaseSwap.COMPLETO },
         label = "progresoSwap"
     )
 
-    // Cuando el cruce termina → emitir callback con propietarios intercambiados
+    // ── Secuencia: SALTO (3s visibles) → CRUCE → COMPLETO ────────────────
+
+    LaunchedEffect(Unit) {
+        fase = FaseSwap.SALTO
+        kotlinx.coroutines.delay(3_000L) // 3 segundos de salto para que todos vean
+        fase = FaseSwap.CRUCE
+    }
+
+    // ── Callback al terminar el cruce ─────────────────────────────────────
+
     LaunchedEffect(fase) {
         if (fase == FaseSwap.COMPLETO) {
-            val nuevaA = cartaA.copy(
-                propietarioId = cartaB.propietarioId,
-                posicion = cartaB.posicion
-            )
-            val nuevaB = cartaB.copy(
-                propietarioId = cartaA.propietarioId,
-                posicion = cartaA.posicion
-            )
+            val nuevaA = cartaA.copy(propietarioId = cartaB.propietarioId, posicion = cartaB.posicion)
+            val nuevaB = cartaB.copy(propietarioId = cartaA.propietarioId, posicion = cartaA.posicion)
             onAnimacionCompleta(nuevaA, nuevaB)
         }
     }
 
-    // Iniciar secuencia: salto → esperar 250ms → cruce
-    LaunchedEffect(Unit) {
-        fase = FaseSwap.SALTO
-        kotlinx.coroutines.delay(2500)
-        fase = FaseSwap.CRUCE
-    }
-
-    // ── Renderizado ────────────────────────────
-    // Usamos Box con offset calculado a partir de las posiciones capturadas
+    // ── Renderizado ───────────────────────────────────────────────────────
 
     Box(modifier = Modifier.fillMaxSize()) {
 
-        // Carta A
+        // Carta A: se desplaza hacia la posición de B
         val offsetXA = (posicionB.x - posicionA.x) * progresoSwap
         val offsetYA = saltoA + (posicionB.y - posicionA.y) * progresoSwap
 
         Box(
             modifier = Modifier
-                .onGloballyPositioned { coords ->
-                    posicionA = coords.positionInRoot()
-                }
-                .graphicsLayer {
-                    translationX = offsetXA
-                    translationY = offsetYA
-                }
+                .onGloballyPositioned { posicionA = it.positionInRoot() }
+                .graphicsLayer { translationX = offsetXA; translationY = offsetYA }
         ) {
             CartaVisual(
                 abierta = mostrarValorA,
@@ -123,19 +120,14 @@ fun CardSwapAnimation(
             )
         }
 
-        // Carta B
+        // Carta B: se desplaza hacia la posición de A
         val offsetXB = (posicionA.x - posicionB.x) * progresoSwap
         val offsetYB = saltoB + (posicionA.y - posicionB.y) * progresoSwap
 
         Box(
             modifier = Modifier
-                .onGloballyPositioned { coords ->
-                    posicionB = coords.positionInRoot()
-                }
-                .graphicsLayer {
-                    translationX = offsetXB
-                    translationY = offsetYB
-                }
+                .onGloballyPositioned { posicionB = it.positionInRoot() }
+                .graphicsLayer { translationX = offsetXB; translationY = offsetYB }
         ) {
             CartaVisual(
                 abierta = mostrarValorB,

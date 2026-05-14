@@ -142,7 +142,10 @@ object HandEvaluator {
             "J"   -> 11
             "Q"   -> 12
             "K"   -> if (carta.palo == "treboles" || carta.palo == "picas") 13 else 1
-            "JKR" -> 0
+            // El comodín sin definir vale 20 puntos (penalización máxima).
+            // Si el jugador lo definió antes de que termine la ronda,
+            // su valor ya fue reemplazado en Firebase y no llega como "JKR".
+            "JKR" -> 20
             else  -> carta.valor.toIntOrNull() ?: 0 // 3 al 10 valen su número
         }
     }
