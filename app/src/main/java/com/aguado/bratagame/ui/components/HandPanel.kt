@@ -245,7 +245,7 @@ private fun CartaSeleccionable(
     ) {
         // Las cartas propias en mano siempre se muestran abiertas al jugador local
         CartaVisual(
-            abierta = true,
+            abierta = false,
             valor = cartaEnMesa?.carta?.valor ?: "",
             palo = mappingPalo(cartaEnMesa?.carta?.palo)
         )

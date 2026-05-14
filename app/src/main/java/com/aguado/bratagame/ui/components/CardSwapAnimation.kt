@@ -93,7 +93,7 @@ fun CardSwapAnimation(
     // Iniciar secuencia: salto → esperar 250ms → cruce
     LaunchedEffect(Unit) {
         fase = FaseSwap.SALTO
-        kotlinx.coroutines.delay(250)
+        kotlinx.coroutines.delay(2500)
         fase = FaseSwap.CRUCE
     }
 

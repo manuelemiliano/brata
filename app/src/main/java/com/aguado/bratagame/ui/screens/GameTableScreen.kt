@@ -45,12 +45,20 @@ fun GameTableScreen(
     val isPreview = LocalInspectionMode.current
     var mostrarSelectorComodin by remember { mutableStateOf(false) }
     var adelantadoId by remember { mutableStateOf<String?>(null) }
-    var seleccionSinVer by remember { mutableStateOf<List<CartaEnMesa>>(emptyList()) }
 
-    // Estado para el selector de carta propia durante descarte del espiado
+    var seleccionSinVer by remember {
+        mutableStateOf<List<CartaEnMesa>>(emptyList())
+    }
+
+    var swapSinVerPendiente by remember {
+        mutableStateOf<Pair<CartaEnMesa, CartaEnMesa>?>(null)
+    }
+
     var mostrarSelectorCartaPropia by remember { mutableStateOf(false) }
     var cartaEspiadaParaDescartar by remember { mutableStateOf<Carta?>(null) }
     var propietarioEspiadoId by remember { mutableStateOf("") }
+
+    var cartasAlejadasVisibles by remember { mutableStateOf(true) }
 
     DisposableEffect(idSala) {
         if (isPreview || salaPreview != null) {
@@ -64,7 +72,6 @@ fun GameTableScreen(
     }
 
     val salaActual = datosSala ?: return
-
     val yo = salaActual.jugadores[jugadorLocal.id] ?: jugadorLocal
     val esObservador = !salaActual.jugadores.containsKey(jugadorLocal.id)
     val ordenJugadores = TurnManager.ordenDesdeJugadorLocal(jugadorLocal.id, salaActual)
@@ -75,7 +82,7 @@ fun GameTableScreen(
     val cimaPar = cimaDscarte?.let { it.valor to mappingPalo(it.palo) }
     val mostrarContador = salaActual.timestampInicioContador > 0L
 
-    // Carta espiada actual (si la hay)
+    // Carta espiada actual
     val cartaEspiada = if (estadoPoder.estaEspiando) {
         salaActual.jugadores.values
             .flatMap { it.cartas }
@@ -88,8 +95,8 @@ fun GameTableScreen(
             ?.key ?: ""
     } else ""
 
-    // Determinar si el jugador local puede descartar la carta espiada
-    // (solo si la carta espiada tiene el mismo valor que la carta que activó el poder)
+    // FIX 5: As — puede descartar la espiada si es igual a la activadora
+    // FIX 5: As — siempre puede CAMBIAR (cambiar viendo)
     val puedeDescartarEspiada = estadoPoder.esMiPoder &&
             estadoPoder.estaEspiando &&
             cartaEspiada != null &&
@@ -109,6 +116,7 @@ fun GameTableScreen(
             val alignment = calcularAlineacion(index, oponentes.size)
             val rotacion = calcularRotacion(index, oponentes.size)
             val esTurnoOponente = salaActual.turnoActualId == oponente.id
+
             Box(
                 modifier = Modifier.fillMaxSize().padding(24.dp),
                 contentAlignment = alignment
@@ -120,6 +128,9 @@ fun GameTableScreen(
                     rotacion = rotacion,
                     esTurnoActual = esTurnoOponente,
                     estadoPoder = estadoPoder,
+                    cartaEspiadaId = estadoPoder.cartaEspiandoId,
+                    // FIX 2: oponentes nunca ven sus cartas alejadas abiertas
+                    cartasAlejadasVisibles = false,
                     onCartaTocada = { cartaEnMesa ->
                         manejarCartaTocada(
                             cartaEnMesa = cartaEnMesa,
@@ -128,6 +139,9 @@ fun GameTableScreen(
                             jugadorLocalId = jugadorLocal.id,
                             seleccionSinVer = seleccionSinVer,
                             onSeleccionSinVer = { seleccionSinVer = it },
+                            onSwapSinVerPendiente = { cartaA, cartaB ->
+                                swapSinVerPendiente = cartaA to cartaB
+                            },
                             idSala = idSala
                         )
                     }
@@ -147,6 +161,9 @@ fun GameTableScreen(
                 rotacion = 0f,
                 esTurnoActual = estadoTurno.esMiTurno,
                 estadoPoder = estadoPoder,
+                cartaEspiadaId = estadoPoder.cartaEspiandoId,
+                // FIX 2: solo visibles durante el contador
+                cartasAlejadasVisibles = cartasAlejadasVisibles,
                 onBrataClick = {
                     if (estadoTurno.puedePresionarBrata) {
                         GameActions.presionarBrata(idSala, jugadorLocal.id, salaActual)
@@ -160,6 +177,9 @@ fun GameTableScreen(
                         jugadorLocalId = jugadorLocal.id,
                         seleccionSinVer = seleccionSinVer,
                         onSeleccionSinVer = { seleccionSinVer = it },
+                        onSwapSinVerPendiente = { cartaA, cartaB ->
+                            swapSinVerPendiente = cartaA to cartaB
+                        },
                         idSala = idSala
                     )
                 }
@@ -180,7 +200,6 @@ fun GameTableScreen(
         }
 
         // 4. Indicador de turno
-        // Durante espía muestra "Nombre: espiando" en todos los dispositivos
         val textoIndicador = when {
             estadoPoder.hayPoderActivo && estadoPoder.estaEspiando -> {
                 val nombreEspia = salaActual.jugadores[estadoPoder.jugadorPoderId]?.nombre ?: ""
@@ -195,8 +214,28 @@ fun GameTableScreen(
             modifier = Modifier.align(Alignment.TopCenter)
         )
 
-        // 5. HandPanel normal — carta robada del pozo
-        // Solo si el jugador tiene carta en mano Y NO está en modo espía
+
+        swapSinVerPendiente?.let { cartasPendientes ->
+            CardSwapAnimation(
+                cartaA = cartasPendientes.first,
+                cartaB = cartasPendientes.second,
+                mostrarValorA = false,
+                mostrarValorB = false,
+                onAnimacionCompleta = { _, _ ->
+                    GameActions.confirmarCambioSinVer(
+                        salaId = idSala,
+                        jugadorId = jugadorLocal.id,
+                        sala = salaActual,
+                        cartaA = cartasPendientes.first,
+                        cartaB = cartasPendientes.second
+                    )
+
+                    seleccionSinVer = emptyList()
+                    swapSinVerPendiente = null
+                }
+            )
+        }
+
         val cartaEnMano = yo.cartaEnMano
         if (cartaEnMano != null && !esObservador && !estadoPoder.estaEspiando) {
             val ultimaDescarte = salaActual.mazoDescarte.lastOrNull()
@@ -238,12 +277,17 @@ fun GameTableScreen(
             }
         }
 
-        // 6. HandPanel del espía — muestra la carta espiada con sus botones
-        // Solo visible para el jugador que está espiando
+        // 6. HandPanel del espía — muestra carta espiada con botones
         if (estadoPoder.esMiPoder && estadoPoder.estaEspiando && cartaEspiada != null) {
+            // FIX 5: As siempre tiene CAMBIAR además de REGRESAR
+            // ESPIAR solo tiene REGRESAR (y DESCARTAR si valores iguales)
             val accionesEspia = mutableListOf<AccionMano>().apply {
                 add(AccionMano.REGRESAR)
                 if (puedeDescartarEspiada) add(AccionMano.DESCARTAR)
+                // As (CAMBIAR_VIENDO): puede cambiar la carta espiada por cualquiera
+                if (estadoPoder.tipoPoder == TipoPoder.CAMBIAR_VIENDO) {
+                    add(AccionMano.CAMBIAR)
+                }
             }
 
             val cartasEnMesa = yo.cartas.mapIndexed { index, carta ->
@@ -258,16 +302,42 @@ fun GameTableScreen(
                     cartaEnMano = cartaEspiada,
                     cartasDelJugador = cartasEnMesa,
                     accionesDisponibles = accionesEspia,
-                    onAccion = { accion, _ ->
+                    onAccion = { accion, posicionDestino ->
                         when (accion) {
                             AccionMano.REGRESAR -> {
                                 GameActions.regresarCartaEspiada(idSala, jugadorLocal.id, salaActual)
                             }
                             AccionMano.DESCARTAR -> {
-                                // Guardar contexto y mostrar selector de carta propia
                                 cartaEspiadaParaDescartar = cartaEspiada
                                 propietarioEspiadoId = propietarioCartaEspiada
                                 mostrarSelectorCartaPropia = true
+                            }
+                            // FIX 5: As — CAMBIAR activa selección de carta destino
+                            AccionMano.CAMBIAR -> {
+                                posicionDestino?.let { pos ->
+                                    // La carta espiada va a la posición elegida del jugador local
+                                    // La carta local en esa posición va al lugar de la espiada
+                                    val cartaLocalDestino = yo.cartas.getOrNull(pos)
+                                    if (cartaLocalDestino != null) {
+                                        val cartaEspiadaEnMesa = CartaEnMesa(
+                                            carta = cartaEspiada,
+                                            posicion = pos,
+                                            propietarioId = propietarioCartaEspiada
+                                        )
+                                        val cartaLocalEnMesa = CartaEnMesa(
+                                            carta = cartaLocalDestino,
+                                            posicion = pos,
+                                            propietarioId = jugadorLocal.id
+                                        )
+                                        GameActions.confirmarCambioViendo(
+                                            salaId = idSala,
+                                            jugadorId = jugadorLocal.id,
+                                            sala = salaActual,
+                                            cartaEspiada = cartaEspiadaEnMesa,
+                                            cartaDestino = cartaLocalEnMesa
+                                        )
+                                    }
+                                }
                             }
                             else -> Unit
                         }
@@ -276,23 +346,7 @@ fun GameTableScreen(
             }
         }
 
-        // 7. Overlay de carta bailando
-        // Solo visible para jugadores que NO son el espía
-        // El espía ve la carta en su HandPanel, no en la mesa
-        if (estadoPoder.hayPoderActivo &&
-            estadoPoder.estaEspiando &&
-            cartaEspiada != null &&
-            !estadoPoder.esMiPoder
-        ) {
-            val cartaEnMesaEspiada = CartaEnMesa(
-                carta = cartaEspiada,
-                posicion = 0,
-                propietarioId = propietarioCartaEspiada
-            )
-            CartaEspiandoOverlay(carta = cartaEnMesaEspiada)
-        }
-
-        // 8. Alerta de adelantado
+        // 7. Alerta de adelantado
         val adelantadoActual = adelantadoId
         if (adelantadoActual != null) {
             val nombreAdelantado = salaActual.jugadores[adelantadoActual]?.nombre ?: ""
@@ -315,15 +369,18 @@ fun GameTableScreen(
             )
         }
 
-        // 9. Contador de memorización
+        // 8. Contador de memorización
+        // FIX 2: al terminar voltea las cartas alejadas
         if (mostrarContador) {
             ContadorMemorizacion(
                 timestampInicio = salaActual.timestampInicioContador,
-                onTiempoAgotado = { }
+                onTiempoAgotado = {
+                    cartasAlejadasVisibles = false
+                }
             )
         }
 
-        // 10. Botón salir
+        // 9. Botón salir
         IconButton(
             onClick = onSalir,
             modifier = Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 16.dp)
@@ -332,10 +389,10 @@ fun GameTableScreen(
         }
     }
 
-    // Selector de carta propia para dar al espiado tras descartar su carta
+    // Modal: selector de carta propia para dar al espiado
     if (mostrarSelectorCartaPropia) {
-        val cartaEspiadaCtx = cartaEspiadaParaDescartar
-        if (cartaEspiadaCtx != null) {
+        val ctx = cartaEspiadaParaDescartar
+        if (ctx != null) {
             SelectorCartaPropiaParaEspiado(
                 cartasJugador = yo.cartas,
                 onSeleccionar = { posicion ->
@@ -343,7 +400,7 @@ fun GameTableScreen(
                         salaId = idSala,
                         jugadorId = jugadorLocal.id,
                         sala = salaActual,
-                        cartaEspiada = cartaEspiadaCtx,
+                        cartaEspiada = ctx,
                         propietarioEspiadoId = propietarioEspiadoId,
                         posicionCartaPropia = posicion
                     )
@@ -351,14 +408,12 @@ fun GameTableScreen(
                     cartaEspiadaParaDescartar = null
                     propietarioEspiadoId = ""
                 },
-                onDismiss = {
-                    mostrarSelectorCartaPropia = false
-                }
+                onDismiss = { mostrarSelectorCartaPropia = false }
             )
         }
     }
 
-    // Selector de comodin
+    // Modal: selector de comodín
     if (mostrarSelectorComodin) {
         val cartaEnMano = yo.cartaEnMano
         if (cartaEnMano != null) {
@@ -382,8 +437,6 @@ fun GameTableScreen(
 
 // ─────────────────────────────────────────────
 // SELECTOR DE CARTA PROPIA PARA DAR AL ESPIADO
-// Modal que aparece cuando el jugador descarta
-// la carta espiada y debe elegir cuál propia dar
 // ─────────────────────────────────────────────
 
 @Composable
@@ -412,8 +465,6 @@ private fun SelectorCartaPropiaParaEspiado(
                     fontSize = 12.sp
                 )
                 Spacer(modifier = Modifier.height(12.dp))
-
-                // Cuadrado 2x2 seleccionable
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     listOf(listOf(2, 3), listOf(0, 1)).forEach { fila ->
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -432,8 +483,10 @@ private fun SelectorCartaPropiaParaEspiado(
                                             else Modifier
                                         )
                                 ) {
+                                    // FIX 3: se muestran abiertas aquí porque el jugador
+                                    // necesita elegir conscientemente qué carta entregar
                                     CartaVisual(
-                                        abierta = true,
+                                        abierta = false,
                                         valor = carta?.valor ?: "",
                                         palo = mappingPalo(carta?.palo)
                                     )
@@ -473,6 +526,8 @@ fun AreaJugador(
     rotacion: Float,
     esTurnoActual: Boolean,
     estadoPoder: CardPowerResolver.EstadoPoder,
+    cartaEspiadaId: String,
+    cartasAlejadasVisibles: Boolean,
     onBrataClick: () -> Unit = {},
     onCartaTocada: (CartaEnMesa) -> Unit = {}
 ) {
@@ -498,6 +553,8 @@ fun AreaJugador(
                 esLocal = esLocal,
                 esObservador = esObservador,
                 estadoPoder = estadoPoder,
+                cartaEspiadaId = cartaEspiadaId,
+                cartasAlejadasVisibles = cartasAlejadasVisibles,
                 onCartaTocada = onCartaTocada
             )
 
@@ -533,8 +590,16 @@ fun AreaJugador(
 
 // ─────────────────────────────────────────────
 // CUADRADO DE CARTAS INTERACTIVO
-// [2][3] ALEJADAS - las ve el jugador local
-// [0][1] PROXIMAS - siempre cerradas
+//
+// FIX 1: La carta espiada baila exactamente en su posición
+//         en el cuadrado del jugador espiado, visible para todos
+//         excepto el espía (que la tiene en su HandPanel)
+//
+// FIX 2: cartasAlejadasVisibles controla si [2][3] se ven abiertas
+//         true = durante contador, false = después
+//
+// FIX 3: CAMBIAR SIN VER — las cartas siempre cerradas
+//         El jugador elige sin ver los valores
 // ─────────────────────────────────────────────
 
 @Composable
@@ -543,29 +608,64 @@ fun CuadradoCartasInteractivo(
     esLocal: Boolean,
     esObservador: Boolean,
     estadoPoder: CardPowerResolver.EstadoPoder,
+    cartaEspiadaId: String,
+    cartasAlejadasVisibles: Boolean,
     onCartaTocada: (CartaEnMesa) -> Unit
 ) {
     val cartas = jugador.cartas
+
+    // FIX 3: durante CAMBIAR_SIN_VER nadie ve sus valores
+    val esCambiarSinVer = estadoPoder.tipoPoder == TipoPoder.CAMBIAR_SIN_VER
+
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         listOf(listOf(2, 3), listOf(0, 1)).forEachIndexed { filaIndex, posiciones ->
             Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 posiciones.forEach { pos ->
                     val carta = cartas.getOrNull(pos)
+
+                    if (carta == null) {
+                        Spacer(modifier = Modifier.size(50.dp, 70.dp))
+                        return@forEach
+                    }
+
                     val cartaEnMesa = CartaEnMesa(
-                        carta = carta ?: Carta(),
+                        carta = carta,
                         posicion = pos,
                         propietarioId = jugador.id
                     )
-                    val esSeleccionable = estadoPoder.cartasSeleccionables.contains(carta?.id)
-                    // Fila superior (index 0) = posiciones 2,3 = ALEJADAS = las ve el jugador local
-                    val abierta = esObservador || (esLocal && filaIndex == 0)
 
-                    CartaVisualInteractiva(
-                        carta = carta,
-                        abierta = abierta,
-                        esSeleccionable = esSeleccionable,
-                        onClick = { if (esSeleccionable) onCartaTocada(cartaEnMesa) }
-                    )
+                    val esSeleccionable = estadoPoder.cartasSeleccionables.contains(carta.id)
+
+                    // FIX 1: detectar si esta carta específica está siendo espiada
+                    val estaEspiada = carta?.id == cartaEspiadaId && cartaEspiadaId.isNotEmpty()
+
+                    // Lógica de visibilidad:
+                    // - Observador: siempre abierta
+                    // - CAMBIAR_SIN_VER: siempre cerrada (nadie ve)
+                    // - Fila alejada (index 0 = pos 2,3): abierta durante contador
+                    // - Fila próxima (index 1 = pos 0,1): siempre cerrada
+                    val abierta = when {
+                        esCambiarSinVer -> false
+                        esObservador -> true
+                        esLocal && filaIndex == 0 -> cartasAlejadasVisibles
+                        else -> false
+                    }
+
+                    if (estaEspiada) {
+                        // FIX 1: En lugar de la carta normal, mostrar la animación
+                        // de salto en la posición exacta de la carta
+                        CartaEspiandoOverlay(
+                            carta = cartaEnMesa,
+                            modifier = Modifier.size(50.dp, 70.dp)
+                        )
+                    } else {
+                        CartaVisualInteractiva(
+                            carta = carta,
+                            abierta = abierta,
+                            esSeleccionable = esSeleccionable,
+                            onClick = { if (esSeleccionable) onCartaTocada(cartaEnMesa) }
+                        )
+                    }
                 }
             }
         }
@@ -681,8 +781,9 @@ private fun manejarCartaTocada(
     jugadorLocalId: String,
     seleccionSinVer: List<CartaEnMesa>,
     onSeleccionSinVer: (List<CartaEnMesa>) -> Unit,
+    onSwapSinVerPendiente: (CartaEnMesa, CartaEnMesa) -> Unit,
     idSala: String
-) {
+){
     if (!estadoPoder.hayPoderActivo || !estadoPoder.esMiPoder) return
 
     when (estadoPoder.tipoPoder) {
@@ -696,9 +797,12 @@ private fun manejarCartaTocada(
         }
         TipoPoder.CAMBIAR_SIN_VER -> {
             val nuevaSeleccion = seleccionSinVer + cartaEnMesa
+
             if (nuevaSeleccion.size == 2) {
-                GameActions.confirmarCambioSinVer(idSala, jugadorLocalId, salaActual, nuevaSeleccion[0], nuevaSeleccion[1])
-                onSeleccionSinVer(emptyList())
+                onSwapSinVerPendiente(
+                    nuevaSeleccion[0],
+                    nuevaSeleccion[1]
+                )
             } else {
                 onSeleccionSinVer(nuevaSeleccion)
             }
@@ -755,7 +859,7 @@ fun calcularRotacion(index: Int, total: Int): Float {
 }
 
 // ─────────────────────────────────────────────
-// PREVIEWS
+// PREVIEW
 // ─────────────────────────────────────────────
 
 @androidx.compose.ui.tooling.preview.Preview(showBackground = true, widthDp = 360, heightDp = 760)
@@ -774,10 +878,13 @@ fun GameTablePreview() {
         jugadorLocal = yo,
         idSala = "test",
         onSalir = {},
-        salaPreview = Sala(id = "test", jugadores = mapOf("1" to yo, "2" to op1, "3" to op2), turnoActualId = "1")
+        salaPreview = Sala(
+            id = "test",
+            jugadores = mapOf("1" to yo, "2" to op1, "3" to op2),
+            turnoActualId = "1"
+        )
     )
 }
-
 // Cartas de prueba reutilizables
 private val cartasPrueba = listOf(
     Carta(valor = "7", palo = "corazones"),

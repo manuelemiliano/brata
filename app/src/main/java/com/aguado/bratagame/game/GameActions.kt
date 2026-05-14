@@ -279,9 +279,10 @@ object GameActions {
         val espiado = sala.jugadores[propietarioEspiadoId] ?: run { onError("Espiado no encontrado"); return }
 
         val cartasJugador = jugador.cartas.toMutableList()
-        if (posicionCartaPropia !in 0 until cartasJugador.size) { onError("Posición inválida"); return }
-
-        // Carta propia que le dará al espiado
+        if (posicionCartaPropia !in 0 until cartasJugador.size) {
+            onError("Posición inválida")
+            return
+        }
         val cartaParaDar = cartasJugador.removeAt(posicionCartaPropia)
 
         // Carta espiada sale del juego del espiado y va al descarte
