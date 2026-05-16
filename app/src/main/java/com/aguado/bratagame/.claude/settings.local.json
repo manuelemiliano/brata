@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\Manuel\\\\AndroidStudioProjects\\\\Bratagame\" -Force -Recurse -Depth 1 | Where-Object { -not $_.PSIsContainer -and $_.Extension -in @\\('.txt', '.md', '.pdf', '.docx', '.doc'\\) } | Select-Object FullName)",
+      "PowerShell(New-Item *)",
+      "PowerShell(& \"C:\\\\Users\\\\Manuel\\\\AndroidStudioProjects\\\\Bratagame\\\\gradlew.bat\" -p \"C:\\\\Users\\\\Manuel\\\\AndroidStudioProjects\\\\Bratagame\" :app:compileDebugKotlin 2>&1 | Select-Object -Last 60)"
+    ]
+  }
+}
