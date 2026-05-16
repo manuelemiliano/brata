@@ -18,7 +18,11 @@ import com.aguado.bratagame.Jugador
 import com.aguado.bratagame.Sala
 import com.aguado.bratagame.ui.theme.DarkCasinoGreen
 import com.aguado.bratagame.ui.theme.CasinoGold
-
+import androidx.compose.foundation.Image
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import com.aguado.bratagame.R
 @Composable
 fun LobbyScreen(
     jugadorLocal: Jugador,
@@ -55,17 +59,36 @@ fun LobbyScreen(
         onDispose { FirebaseManager.dejarDeObservarSala(idSalaInicial, listener) }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(DarkCasinoGreen)) {
+    Box(modifier = Modifier.fillMaxSize()) {
+
+        Image(
+            painter = painterResource(id = R.drawable.login_lobby_bg),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
+
+        // Capa oscura opcional para mejorar contraste
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.35f))
+        )
+
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "LOBBY: ${datosSala?.nombreSala ?: ""}",
-                    color = CasinoGold,
+                    color = Color(0xFF1B5E20),
                     style = MaterialTheme.typography.headlineMedium,
                     modifier = Modifier.weight(1f)
                 )
                 IconButton(onClick = onSalirAlLogin) {
-                    Icon(Icons.Default.ExitToApp, "Salir", tint = Color.Red)
+                    Icon(
+                        imageVector = Icons.Default.ExitToApp,
+                        contentDescription = "Salir",
+                        tint = Color(0xFF1B5E20)
+                    )
                 }
             }
 
@@ -142,16 +165,33 @@ fun LobbyScreen(
             }
 
             val yo = datosSala?.jugadores?.get(jugadorLocal.id)
+            val textoBotonListo = if (yo?.estaListo == true) {
+                "CANCELAR"
+            } else {
+                "ESTOY LISTO"
+            }
+
             Button(
                 onClick = {
-                    FirebaseManager.cambiarEstadoListo(idSalaInicial, jugadorLocal.id, !(yo?.estaListo ?: false))
+                    FirebaseManager.cambiarEstadoListo(
+                        idSalaInicial,
+                        jugadorLocal.id,
+                        !(yo?.estaListo ?: false)
+                    )
                 },
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if(yo?.estaListo == true) Color.Red else CasinoGold
+                    containerColor = Color(0xFF456B03),
+                    contentColor = Color.White,
+                    disabledContainerColor = Color(0xFF456B03).copy(alpha = 0.45f),
+                    disabledContentColor = Color.White.copy(alpha = 0.75f)
                 )
             ) {
-                Text(if(yo?.estaListo == true) "CANCELAR" else "ESTOY LISTO", color = Color.Black)
+                Text(
+                    text = textoBotonListo,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
             }
 
             // BOTÓN COMENZAR (Solo para el Host)

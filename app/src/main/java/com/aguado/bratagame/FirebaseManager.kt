@@ -13,6 +13,7 @@ object FirebaseManager {
     // lazy para evitar inicializar Firebase durante Previews del IDE
     private val database: FirebaseDatabase by lazy { Firebase.database }
     private val salasRef by lazy { database.getReference("salas") }
+    private val connectedRef by lazy { database.getReference(".info/connected") }
 
     // ─────────────────────────────────────────
     // INICIAR PARTIDA
@@ -135,7 +136,40 @@ object FirebaseManager {
     fun eliminarSala(salaId: String) {
         salasRef.child(salaId).removeValue()
     }
+    fun registrarPresenciaJugador(
+        salaId: String,
+        jugadorId: String
+    ) {
+        val salaRef = salasRef.child(salaId)
+        val jugadorRef = salaRef.child("jugadores").child(jugadorId)
 
+        connectedRef.addValueEventListener(object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val conectado = snapshot.getValue(Boolean::class.java) ?: false
+
+                if (conectado) {
+                    jugadorRef.onDisconnect().removeValue()
+
+                    jugadorRef.child("conectado").setValue(true)
+                    jugadorRef.child("ultimaConexion").setValue(System.currentTimeMillis())
+                }
+            }
+
+            override fun onCancelled(error: DatabaseError) {}
+        })
+    }
+
+    fun limpiarSalaSiQuedaVacia(salaId: String) {
+        val salaRef = salasRef.child(salaId)
+
+        salaRef.child("jugadores")
+            .get()
+            .addOnSuccessListener { snapshot ->
+                if (!snapshot.exists() || snapshot.childrenCount == 0L) {
+                    salaRef.removeValue()
+                }
+            }
+    }
     // Ya no se usa directamente — iniciarPartida lo reemplaza.
     // Se mantiene por compatibilidad con LobbyScreen hasta actualizar ese archivo.
     fun marcarJuegoIniciado(salaId: String) {
@@ -149,32 +183,44 @@ object FirebaseManager {
     fun obtenerSalasActivas(onUpdate: (List<Sala>) -> Unit): ValueEventListener {
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
-                val lista = snapshot.children.mapNotNull { it.getValue(Sala::class.java) }
-                // Solo mostrar salas activas que NO estén en juego aún
-                onUpdate(lista.filter { it.estaActiva && !it.estaEnJuego })
+                val lista = snapshot.children.mapNotNull { salaSnap ->
+                    val sala = salaSnap.getValue(Sala::class.java)
+
+                    when {
+                        sala == null -> null
+
+                        sala.jugadores.isEmpty() -> {
+                            salasRef.child(sala.id).removeValue()
+                            null
+                        }
+
+                        sala.estaActiva && !sala.estaEnJuego -> sala
+
+                        else -> null
+                    }
+                }
+
+                onUpdate(lista)
             }
+
             override fun onCancelled(error: DatabaseError) {}
         }
+
         salasRef.addValueEventListener(listener)
         return listener
     }
 
     fun salirDeSala(salaId: String, jugadorId: String, esAnfitrion: Boolean) {
         val salaRef = salasRef.child(salaId)
+        val jugadorRef = salaRef.child("jugadores").child(jugadorId)
 
-        salaRef.child("jugadores").child(jugadorId).removeValue().addOnCompleteListener {
-            salaRef.child("jugadores").get().addOnSuccessListener { snapshot ->
-                when {
-                    // Sala vacía → eliminar
-                    !snapshot.exists() || snapshot.childrenCount == 0L -> {
-                        salaRef.removeValue()
-                    }
-                    // Anfitrión se va con gente dentro → cerrar sala
-                    esAnfitrion -> {
-                        salaRef.removeValue()
-                    }
-                    // Jugador normal se va → la sala continúa
-                }
+        jugadorRef.onDisconnect().cancel()
+
+        jugadorRef.removeValue().addOnCompleteListener {
+            if (esAnfitrion) {
+                salaRef.removeValue()
+            } else {
+                limpiarSalaSiQuedaVacia(salaId)
             }
         }
     }
@@ -188,8 +234,17 @@ object FirebaseManager {
             estaEnJuego = false,
             estaActiva = true
         )
-        salasRef.child(salaId).setValue(nuevaSala).addOnCompleteListener {
-            onComplete(if (it.isSuccessful) salaId else null)
+
+        salasRef.child(salaId).setValue(nuevaSala).addOnCompleteListener { task ->
+            if (task.isSuccessful) {
+                registrarPresenciaJugador(
+                    salaId = salaId,
+                    jugadorId = anfitrion.id
+                )
+                onComplete(salaId)
+            } else {
+                onComplete(null)
+            }
         }
     }
 
@@ -198,7 +253,16 @@ object FirebaseManager {
             .child("jugadores")
             .child(jugador.id)
             .setValue(jugador)
-            .addOnCompleteListener { onComplete(it.isSuccessful) }
+            .addOnCompleteListener { task ->
+                if (task.isSuccessful) {
+                    registrarPresenciaJugador(
+                        salaId = salaId,
+                        jugadorId = jugador.id
+                    )
+                }
+
+                onComplete(task.isSuccessful)
+            }
     }
 
     // ─────────────────────────────────────────
@@ -220,4 +284,5 @@ object FirebaseManager {
     fun dejarDeObservarSala(salaId: String, listener: ValueEventListener) {
         salasRef.child(salaId).removeEventListener(listener)
     }
+
 }

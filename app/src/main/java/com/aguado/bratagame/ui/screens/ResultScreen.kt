@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.sp
 import com.aguado.bratagame.Carta
 import com.aguado.bratagame.Jugador
 import com.aguado.bratagame.Sala
+import com.aguado.bratagame.esSlotVacio
 import com.aguado.bratagame.game.HandEvaluator
 import com.aguado.bratagame.game.HandEvaluator.ReglaEspecial
 import com.aguado.bratagame.ui.components.CartaVisual
@@ -196,19 +197,23 @@ private fun FilaJugadorResultado(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 cartasOrdenadas.forEach { carta ->
+                    val esHueco = carta == null || carta.esSlotVacio()
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.weight(1f)
                     ) {
                         CartaVisual(
-                            abierta = true,
+                            abierta = !esHueco,
                             valor = carta?.valor ?: "",
                             palo = mappingPalo(carta?.palo),
                             modifier = Modifier.size(56.dp, 78.dp)
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = carta?.let { "${HandEvaluator.valorPuntuacion(it)}" } ?: "-",
+                            text = when {
+                                esHueco -> "—"
+                                else -> "${HandEvaluator.valorPuntuacion(carta!!)}"
+                            },
                             color = Color.White.copy(alpha = 0.75f),
                             fontSize = 11.sp,
                             textAlign = TextAlign.Center,

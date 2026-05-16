@@ -2,8 +2,6 @@ package com.aguado.bratagame.ui.components
 
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -15,7 +13,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aguado.bratagame.Carta
-import com.aguado.bratagame.CartaEnMesa
 import com.aguado.bratagame.TipoPoder
 import com.aguado.bratagame.game.AccionMano
 import com.aguado.bratagame.game.GameRules
@@ -40,16 +37,9 @@ import com.aguado.bratagame.ui.theme.CasinoGold
 @Composable
 fun HandPanel(
     cartaEnMano: Carta,
-    cartasDelJugador: List<CartaEnMesa>,
     accionesDisponibles: List<AccionMano>,
     onAccion: (accion: AccionMano, posicionDestino: Int?) -> Unit
 ) {
-    // null = ninguna seleccionada aún, Int = índice 0-3 de la carta elegida para intercambiar
-    var cartaSeleccionadaIndex by remember { mutableStateOf<Int?>(null) }
-
-    // Fase del panel: SELECCIONANDO_INTERCAMBIO muestra el cuadrado de cartas propias
-    var modoSeleccionIntercambio by remember { mutableStateOf(false) }
-
     AnimatedVisibility(
         visible = true,
         enter = slideInVertically(initialOffsetY = { it }),
@@ -59,14 +49,13 @@ fun HandPanel(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(
-                    color = Color(0xE6102A10), // verde oscuro semitransparente
+                    color = Color(0xE6102A10),
                     shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
                 )
                 .padding(16.dp)
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
 
-                // ── Indicador de poder ─────────────────
                 val poder = GameRules.obtenerPoder(cartaEnMano)
                 if (poder != TipoPoder.NINGUNO) {
                     Text(
@@ -78,7 +67,6 @@ fun HandPanel(
                     )
                 }
 
-                // ── Carta en mano (siempre visible, grande) ──
                 CartaVisual(
                     abierta = true,
                     valor = cartaEnMano.valor,
@@ -88,70 +76,17 @@ fun HandPanel(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // ── Modo: seleccionar carta para intercambiar ──
-                if (modoSeleccionIntercambio) {
-                    Text(
-                        text = "¿Con cuál carta intercambias?",
-                        color = Color.White,
-                        fontSize = 13.sp,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-
-                    // Cuadrado 2x2 de cartas propias seleccionables
-                    CuadradoCartasSeleccionable(
-                        cartas = cartasDelJugador,
-                        seleccionada = cartaSeleccionadaIndex,
-                        onSeleccionar = { cartaSeleccionadaIndex = it }
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        // Cancelar selección
-                        OutlinedButton(
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    accionesDisponibles.forEach { accion ->
+                        BotonAccion(
+                            accion = accion,
                             onClick = {
-                                modoSeleccionIntercambio = false
-                                cartaSeleccionadaIndex = null
-                            },
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
-                        ) {
-                            Text("CANCELAR")
-                        }
-
-                        // Confirmar intercambio
-                        Button(
-                            onClick = {
-                                cartaSeleccionadaIndex?.let { pos ->
-                                    onAccion(AccionMano.CAMBIAR, pos)
-                                }
-                            },
-                            enabled = cartaSeleccionadaIndex != null,
-                            colors = ButtonDefaults.buttonColors(containerColor = CasinoGold)
-                        ) {
-                            Text("CONFIRMAR", color = Color.Black, fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                } else {
-                    // ── Botones de acción principales ─────────
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        accionesDisponibles.forEach { accion ->
-                            BotonAccion(
-                                accion = accion,
-                                onClick = {
-                                    when (accion) {
-                                        AccionMano.CAMBIAR -> {
-                                            // Entrar al modo de selección de carta
-                                            modoSeleccionIntercambio = true
-                                        }
-                                        else -> onAccion(accion, null)
-                                    }
-                                }
-                            )
-                        }
+                                onAccion(accion, null)
+                            }
+                        )
                     }
                 }
             }
@@ -193,64 +128,6 @@ private fun BotonAccion(accion: AccionMano, onClick: () -> Unit) {
 // La carta seleccionada se resalta con un borde dorado.
 // ─────────────────────────────────────────────
 
-@Composable
-private fun CuadradoCartasSeleccionable(
-    cartas: List<CartaEnMesa>,
-    seleccionada: Int?,
-    onSeleccionar: (Int) -> Unit
-) {
-    // Respeta el layout 2x2:
-    //   [2][3]  ← posiciones alejadas (fila superior)
-    //   [0][1]  ← posiciones próximas (fila inferior)
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        // Fila superior: posiciones 2 y 3
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf(2, 3).forEach { pos ->
-                val cartaEnMesa = cartas.find { it.posicion == pos }
-                CartaSeleccionable(
-                    cartaEnMesa = cartaEnMesa,
-                    estaSeleccionada = seleccionada == pos,
-                    onClick = { onSeleccionar(pos) }
-                )
-            }
-        }
-        // Fila inferior: posiciones 0 y 1
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf(0, 1).forEach { pos ->
-                val cartaEnMesa = cartas.find { it.posicion == pos }
-                CartaSeleccionable(
-                    cartaEnMesa = cartaEnMesa,
-                    estaSeleccionada = seleccionada == pos,
-                    onClick = { onSeleccionar(pos) }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun CartaSeleccionable(
-    cartaEnMesa: CartaEnMesa?,
-    estaSeleccionada: Boolean,
-    onClick: () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .clickable { onClick() }
-            .border(
-                width = if (estaSeleccionada) 2.dp else 0.dp,
-                color = if (estaSeleccionada) CasinoGold else Color.Transparent,
-                shape = RoundedCornerShape(4.dp)
-            )
-    ) {
-        // Las cartas propias en mano siempre se muestran abiertas al jugador local
-        CartaVisual(
-            abierta = false,
-            valor = cartaEnMesa?.carta?.valor ?: "",
-            palo = mappingPalo(cartaEnMesa?.carta?.palo)
-        )
-    }
-}
 
 // ─────────────────────────────────────────────
 // HELPERS

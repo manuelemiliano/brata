@@ -10,13 +10,24 @@ import com.aguado.bratagame.ui.screens.LobbyScreen
 import com.aguado.bratagame.ui.screens.LoginScreen
 import com.aguado.bratagame.ui.screens.ResultScreen
 import java.util.UUID
-
+import android.content.Context
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             // ID único por dispositivo — evita duplicados al reconectar
-            val idUsuarioUnico = rememberSaveable { UUID.randomUUID().toString() }
+            val idUsuarioUnico = rememberSaveable {
+                val prefs = getSharedPreferences("brata_prefs", Context.MODE_PRIVATE)
+                val existente = prefs.getString("jugador_id", null)
+
+                if (existente != null) {
+                    existente
+                } else {
+                    val nuevo = UUID.randomUUID().toString()
+                    prefs.edit().putString("jugador_id", nuevo).apply()
+                    nuevo
+                }
+            }
 
             var jugadorActual by remember { mutableStateOf<Jugador?>(null) }
             var idSalaActual by remember { mutableStateOf<String?>(null) }

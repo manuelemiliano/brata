@@ -3,6 +3,7 @@ package com.aguado.bratagame.game
 import com.aguado.bratagame.Carta
 import com.aguado.bratagame.Jugador
 import com.aguado.bratagame.Sala
+import com.aguado.bratagame.esSlotVacio
 
 // ─────────────────────────────────────────────
 // HAND EVALUATOR
@@ -72,7 +73,7 @@ object HandEvaluator {
     // ─────────────────────────────────────────
 
     fun evaluarMano(jugador: Jugador): ResultadoJugador {
-        val cartas = jugador.cartas
+        val cartas = jugador.cartas.filterNot { it.esSlotVacio() }
 
         // ── Regla de palos ─────────────────────
         // 4 o más cartas del mismo palo → 0 puntos

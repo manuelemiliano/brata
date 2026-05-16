@@ -2,11 +2,15 @@ package com.aguado.bratagame.game
 
 import com.aguado.bratagame.Carta
 import com.aguado.bratagame.CartaEnMesa
-import com.aguado.bratagame.CartaPoderActiva
-import com.aguado.bratagame.Jugador
+import com.aguado.bratagame.FirebaseManager
+import com.aguado.bratagame.MesaSlots
 import com.aguado.bratagame.Sala
 import com.aguado.bratagame.TipoPoder
+import com.aguado.bratagame.esSlotVacio
+import com.aguado.bratagame.mesaNormalizadaACuatroCasillas
+import com.aguado.bratagame.primeraCasillaVaciaOrdenVisual
 import com.google.firebase.database.FirebaseDatabase
+import java.util.UUID
 
 // ─────────────────────────────────────────────
 // GAME ACTIONS
@@ -24,6 +28,35 @@ object GameActions {
 
     private val salasRef by lazy {
         FirebaseDatabase.getInstance().getReference("salas")
+    }
+
+    // ─────────────────────────────────────────
+    // JUGADA ACTUAL PARA BANNER SUPERIOR
+    // Estado informativo compartido por Firebase.
+    // ─────────────────────────────────────────
+
+    fun marcarJugadaActual(
+        salaId: String,
+        jugadorId: String,
+        tipo: String,
+        subaccion: String = ""
+    ) {
+        val jugada = mapOf(
+            "jugadorId" to jugadorId,
+            "tipo" to tipo,
+            "subaccion" to subaccion,
+            "timestamp" to System.currentTimeMillis()
+        )
+
+        salasRef.child(salaId)
+            .child("jugadaActual")
+            .setValue(jugada)
+    }
+
+    fun limpiarJugadaActual(salaId: String) {
+        salasRef.child(salaId)
+            .child("jugadaActual")
+            .setValue(mapOf<String, Any>())
     }
 
     // ─────────────────────────────────────────
@@ -45,7 +78,7 @@ object GameActions {
             return
         }
 
-        val cartaRobada = mazo.removeAt(0)
+        val cartaRobada = mazo.removeAt(0).limpiarMetaDescarteRobo()
         val updates = mutableMapOf<String, Any>()
 
         // Quitar carta del pozo
@@ -69,17 +102,33 @@ object GameActions {
         sala: Sala,
         onError: (String) -> Unit = {}
     ) {
+        if (sala.turnoActualId != jugadorId) {
+            onError("No es tu turno")
+            return
+        }
+        if (sala.jugadores[jugadorId]?.cartaEnMano != null) {
+            onError("Ya tienes una carta en mano")
+            return
+        }
+
         val descarte = sala.mazoDescarte.toMutableList()
         if (descarte.isEmpty()) {
             onError("El pozo de descarte está vacío")
             return
         }
 
+        val cima = descarte.last()
+        if (!GameRules.cimaDelDescartePuedeRobarla(jugadorId, cima, sala)) {
+            onError("No puedes robar esta carta del descarte")
+            return
+        }
+
         val cartaRobada = descarte.removeAt(descarte.lastIndex)
+        val paraMano = cartaRobada.paraManoTrasRobarDelDescarte()
         val updates = mutableMapOf<String, Any>()
 
         updates["mazoDescarte"] = descarte
-        updates["jugadores/$jugadorId/cartaEnMano"] = cartaRobada
+        updates["jugadores/$jugadorId/cartaEnMano"] = paraMano
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -98,11 +147,18 @@ object GameActions {
         onError: (String) -> Unit = {}
     ) {
         val descarte = sala.mazoDescarte.toMutableList()
-        descarte.add(cartaEnMano)
+        descarte.add(
+            cartaEnMano.copy(
+                descartadaPorJugadorId = jugadorId,
+                descartadaDesdeJuegoMesa = false,
+                comodinRobadoDelDescarteValido = false
+            )
+        )
 
         val updates = mutableMapOf<String, Any>()
         updates["mazoDescarte"] = descarte
-        updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>() // limpiar mano
+        updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>()
+        updates["jugadaActual"] = mapOf<String, Any>()
         updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
 
         salasRef.child(salaId).updateChildren(updates)
@@ -114,6 +170,7 @@ object GameActions {
     // La carta desplazada pasa al descarte.
     // Termina el turno.
     // ─────────────────────────────────────────
+
 
     fun cambiarCartaEnManoPorPropia(
         salaId: String,
@@ -128,8 +185,8 @@ object GameActions {
             return
         }
 
-        val cartasActuales = jugador.cartas.toMutableList()
-        if (posicionDestino !in 0..3 || posicionDestino >= cartasActuales.size) {
+        val cartasActuales = jugador.cartas.mesaNormalizadaACuatroCasillas()
+        if (posicionDestino !in 0..3) {
             onError("Posición inválida")
             return
         }
@@ -138,12 +195,21 @@ object GameActions {
         cartasActuales[posicionDestino] = cartaEnMano
 
         val descarte = sala.mazoDescarte.toMutableList()
-        descarte.add(cartaDesplazada)
+        if (!cartaDesplazada.esSlotVacio()) {
+            descarte.add(
+                cartaDesplazada.copy(
+                    descartadaPorJugadorId = jugadorId,
+                    descartadaDesdeJuegoMesa = true,
+                    comodinRobadoDelDescarteValido = false
+                )
+            )
+        }
 
         val updates = mutableMapOf<String, Any>()
         updates["jugadores/$jugadorId/cartas"] = cartasActuales
         updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>()
         updates["mazoDescarte"] = descarte
+        updates["jugadaActual"] = mapOf<String, Any>()
         updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
 
         salasRef.child(salaId).updateChildren(updates)
@@ -164,7 +230,13 @@ object GameActions {
         onError: (String) -> Unit = {}
     ) {
         val descarte = sala.mazoDescarte.toMutableList()
-        descarte.add(cartaEnMano)
+        descarte.add(
+            cartaEnMano.copy(
+                descartadaPorJugadorId = jugadorId,
+                descartadaDesdeJuegoMesa = false,
+                comodinRobadoDelDescarteValido = false
+            )
+        )
 
         val updates = mutableMapOf<String, Any>()
         updates["mazoDescarte"] = descarte
@@ -175,6 +247,13 @@ object GameActions {
             "jugadorId" to jugadorId,
             "tipoPoder" to TipoPoder.DESCARTE_FREE_SELECCION.name,
             "cartaEspiandoId" to ""
+        )
+
+        updates["jugadaActual"] = mapOf(
+            "jugadorId" to jugadorId,
+            "tipo" to "DESCARTE_FREE",
+            "subaccion" to "Seleccionando carta propia para descartar",
+            "timestamp" to System.currentTimeMillis()
         )
 
         salasRef.child(salaId).updateChildren(updates)
@@ -193,20 +272,33 @@ object GameActions {
             return
         }
 
-        val cartasActuales = jugador.cartas.toMutableList()
-        if (posicionDescartada !in 0..3 || posicionDescartada >= cartasActuales.size) {
+        val cartasActuales = jugador.cartas.mesaNormalizadaACuatroCasillas()
+        if (posicionDescartada !in 0..3) {
             onError("Posición inválida")
             return
         }
 
-        val cartaDescartada = cartasActuales.removeAt(posicionDescartada)
+        val cartaDescartada = cartasActuales[posicionDescartada]
+        if (cartaDescartada.esSlotVacio()) {
+            onError("Casilla vacía")
+            return
+        }
+
+        cartasActuales[posicionDescartada] = MesaSlots.VACIA
         val descarte = sala.mazoDescarte.toMutableList()
-        descarte.add(cartaDescartada)
+        descarte.add(
+            cartaDescartada.copy(
+                descartadaPorJugadorId = jugadorId,
+                descartadaDesdeJuegoMesa = true,
+                comodinRobadoDelDescarteValido = false
+            )
+        )
 
         val updates = mutableMapOf<String, Any>()
         updates["jugadores/$jugadorId/cartas"] = cartasActuales
         updates["mazoDescarte"] = descarte
         updates["cartaPoderActiva"] = mapOf<String, Any>()
+        updates["jugadaActual"] = mapOf<String, Any>()
         updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
 
         salasRef.child(salaId).updateChildren(updates)
@@ -226,7 +318,13 @@ object GameActions {
         onError: (String) -> Unit = {}
     ) {
         val descarte = sala.mazoDescarte.toMutableList()
-        descarte.add(cartaEnMano)
+        descarte.add(
+            cartaEnMano.copy(
+                descartadaPorJugadorId = jugadorId,
+                descartadaDesdeJuegoMesa = false,
+                comodinRobadoDelDescarteValido = false
+            )
+        )
 
         val updates = mutableMapOf<String, Any>()
         updates["mazoDescarte"] = descarte
@@ -247,8 +345,35 @@ object GameActions {
         jugadorId: String,
         cartaId: String
     ) {
-        salasRef.child(salaId).child("cartaPoderActiva")
-            .child("cartaEspiandoId").setValue(cartaId)
+        val updates = mutableMapOf<String, Any>()
+
+        updates["cartaPoderActiva/cartaEspiandoId"] = cartaId
+        updates["jugadaActual"] = mapOf(
+            "jugadorId" to jugadorId,
+            "tipo" to "ESPIAR",
+            "subaccion" to "Viendo una carta",
+            "timestamp" to System.currentTimeMillis()
+        )
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
+    fun espiarCartaCambioViendo(
+        salaId: String,
+        jugadorId: String,
+        cartaId: String
+    ) {
+        val updates = mutableMapOf<String, Any>()
+
+        updates["cartaPoderActiva/cartaEspiandoId"] = cartaId
+        updates["jugadaActual"] = mapOf(
+            "jugadorId" to jugadorId,
+            "tipo" to "CAMBIAR_VIENDO",
+            "subaccion" to "Viendo carta; puede cambiarla o regresarla",
+            "timestamp" to System.currentTimeMillis()
+        )
+
+        salasRef.child(salaId).updateChildren(updates)
     }
 
     // El jugador termina de espiar: regresa la carta a su lugar
@@ -259,6 +384,7 @@ object GameActions {
     ) {
         val updates = mutableMapOf<String, Any>()
         updates["cartaPoderActiva"] = mapOf<String, Any>()
+        updates["jugadaActual"] = mapOf<String, Any>()
         updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
 
         salasRef.child(salaId).updateChildren(updates)
@@ -278,22 +404,34 @@ object GameActions {
         val jugador = sala.jugadores[jugadorId] ?: run { onError("Jugador no encontrado"); return }
         val espiado = sala.jugadores[propietarioEspiadoId] ?: run { onError("Espiado no encontrado"); return }
 
-        val cartasJugador = jugador.cartas.toMutableList()
-        if (posicionCartaPropia !in 0 until cartasJugador.size) {
+        val cartasJugador = jugador.cartas.mesaNormalizadaACuatroCasillas()
+        if (posicionCartaPropia !in 0..3) {
             onError("Posición inválida")
             return
         }
-        val cartaParaDar = cartasJugador.removeAt(posicionCartaPropia)
+        val cartaParaDar = cartasJugador[posicionCartaPropia]
+        if (cartaParaDar.esSlotVacio()) {
+            onError("Casilla vacía")
+            return
+        }
+        cartasJugador[posicionCartaPropia] = MesaSlots.VACIA
 
-        // Carta espiada sale del juego del espiado y va al descarte
-        val cartasEspiado = espiado.cartas.toMutableList()
-        cartasEspiado.removeAll { it.id == cartaEspiada.id }
-
-        // El espiado recibe la carta propia del espía
-        cartasEspiado.add(cartaParaDar)
+        val cartasEspiado = espiado.cartas.mesaNormalizadaACuatroCasillas()
+        val idxEspiada = cartasEspiado.indexOfFirst { it.id == cartaEspiada.id }
+        if (idxEspiada < 0) {
+            onError("Carta espiada no encontrada en mesa")
+            return
+        }
+        cartasEspiado[idxEspiada] = cartaParaDar
 
         val descarte = sala.mazoDescarte.toMutableList()
-        descarte.add(cartaEspiada)
+        descarte.add(
+            cartaEspiada.copy(
+                descartadaPorJugadorId = jugadorId,
+                descartadaDesdeJuegoMesa = false,
+                comodinRobadoDelDescarteValido = false
+            )
+        )
 
         val updates = mutableMapOf<String, Any>()
         updates["jugadores/$jugadorId/cartas"] = cartasJugador
@@ -319,7 +457,13 @@ object GameActions {
         onError: (String) -> Unit = {}
     ) {
         val descarte = sala.mazoDescarte.toMutableList()
-        descarte.add(cartaEnMano)
+        descarte.add(
+            cartaEnMano.copy(
+                descartadaPorJugadorId = jugadorId,
+                descartadaDesdeJuegoMesa = false,
+                comodinRobadoDelDescarteValido = false
+            )
+        )
 
         val updates = mutableMapOf<String, Any>()
         updates["mazoDescarte"] = descarte
@@ -328,6 +472,13 @@ object GameActions {
             "jugadorId" to jugadorId,
             "tipoPoder" to TipoPoder.CAMBIAR_VIENDO.name,
             "cartaEspiandoId" to ""
+        )
+
+        updates["jugadaActual"] = mapOf(
+            "jugadorId" to jugadorId,
+            "tipo" to "CAMBIAR_VIENDO",
+            "subaccion" to "Seleccionando carta para ver",
+            "timestamp" to System.currentTimeMillis()
         )
 
         salasRef.child(salaId).updateChildren(updates)
@@ -340,22 +491,23 @@ object GameActions {
         salaId: String,
         jugadorId: String,
         sala: Sala,
-        cartaEspiada: CartaEnMesa,
-        cartaDestino: CartaEnMesa,
+        jugadorAId: String,
+        cartaAId: String,
+        jugadorBId: String,
+        cartaBId: String,
         onError: (String) -> Unit = {}
     ) {
-        // Intercambiar propietarios y posiciones
-        val nuevaEspiada = cartaEspiada.copy(
-            propietarioId = cartaDestino.propietarioId,
-            posicion = cartaDestino.posicion
-        )
-        val nuevaDestino = cartaDestino.copy(
-            propietarioId = cartaEspiada.propietarioId,
-            posicion = cartaEspiada.posicion
-        )
+        val updates = construirUpdatesIntercambioPorId(
+            sala = sala,
+            jugadorAId = jugadorAId,
+            cartaAId = cartaAId,
+            jugadorBId = jugadorBId,
+            cartaBId = cartaBId,
+            onError = onError
+        ) ?: return
 
-        val updates = construirUpdatesIntercambio(sala, nuevaEspiada, nuevaDestino)
         updates["cartaPoderActiva"] = mapOf<String, Any>()
+        updates["jugadaActual"] = mapOf<String, Any>()
         updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
 
         salasRef.child(salaId).updateChildren(updates)
@@ -375,7 +527,13 @@ object GameActions {
         onError: (String) -> Unit = {}
     ) {
         val descarte = sala.mazoDescarte.toMutableList()
-        descarte.add(cartaEnMano)
+        descarte.add(
+            cartaEnMano.copy(
+                descartadaPorJugadorId = jugadorId,
+                descartadaDesdeJuegoMesa = false,
+                comodinRobadoDelDescarteValido = false
+            )
+        )
 
         val updates = mutableMapOf<String, Any>()
         updates["mazoDescarte"] = descarte
@@ -386,6 +544,13 @@ object GameActions {
             "cartaEspiandoId" to ""
         )
 
+        updates["jugadaActual"] = mapOf(
+            "jugadorId" to jugadorId,
+            "tipo" to "CAMBIAR_SIN_VER",
+            "subaccion" to "Seleccionando dos cartas",
+            "timestamp" to System.currentTimeMillis()
+        )
+
         salasRef.child(salaId).updateChildren(updates)
     }
 
@@ -394,18 +559,47 @@ object GameActions {
         salaId: String,
         jugadorId: String,
         sala: Sala,
-        cartaA: CartaEnMesa,
-        cartaB: CartaEnMesa,
+        jugadorAId: String,
+        cartaAId: String,
+        jugadorBId: String,
+        cartaBId: String,
         onError: (String) -> Unit = {}
     ) {
-        val nuevaA = cartaA.copy(propietarioId = cartaB.propietarioId, posicion = cartaB.posicion)
-        val nuevaB = cartaB.copy(propietarioId = cartaA.propietarioId, posicion = cartaA.posicion)
+        val updates = construirUpdatesIntercambioPorId(
+            sala = sala,
+            jugadorAId = jugadorAId,
+            cartaAId = cartaAId,
+            jugadorBId = jugadorBId,
+            cartaBId = cartaBId,
+            onError = onError
+        ) ?: return
 
-        val updates = construirUpdatesIntercambio(sala, nuevaA, nuevaB)
         updates["cartaPoderActiva"] = mapOf<String, Any>()
+        updates["jugadaActual"] = mapOf<String, Any>()
         updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
 
         salasRef.child(salaId).updateChildren(updates)
+    }
+
+    fun resolverCartaEnMesaPorId(
+        sala: Sala,
+        propietarioId: String,
+        cartaId: String
+    ): CartaEnMesa? {
+        val cartas = sala.jugadores[propietarioId]
+            ?.cartas
+            ?.mesaNormalizadaACuatroCasillas()
+            ?: return null
+
+        val posicion = cartas.indexOfFirst { it.id == cartaId && !it.esSlotVacio() }
+
+        if (posicion < 0) return null
+
+        return CartaEnMesa(
+            carta = cartas[posicion],
+            posicion = posicion,
+            propietarioId = propietarioId
+        )
     }
 
     // ─────────────────────────────────────────
@@ -425,7 +619,10 @@ object GameActions {
     ) {
         val cartaTransformada = comodin.copy(
             valor = valorElegido,
-            palo = paloElegido
+            palo = paloElegido,
+            descartadaPorJugadorId = jugadorId,
+            descartadaDesdeJuegoMesa = false,
+            comodinRobadoDelDescarteValido = false
         )
 
         val descarte = sala.mazoDescarte.toMutableList()
@@ -438,6 +635,8 @@ object GameActions {
 
         salasRef.child(salaId).updateChildren(updates)
     }
+
+
 
     // ─────────────────────────────────────────
     // DESCARTE ESPONTÁNEO
@@ -463,8 +662,12 @@ object GameActions {
             return
         }
 
-        val cartaADescartar = jugador.cartas.getOrNull(posicionCarta) ?: run {
+        val cartaADescartar = jugador.cartas.mesaNormalizadaACuatroCasillas().getOrNull(posicionCarta) ?: run {
             onError("Posición inválida")
+            return
+        }
+        if (cartaADescartar.esSlotVacio()) {
+            onError("Casilla vacía")
             return
         }
 
@@ -474,15 +677,60 @@ object GameActions {
             return
         }
 
-        val cartasActualizadas = jugador.cartas.toMutableList()
-        cartasActualizadas.removeAt(posicionCarta)
+        val cartasActualizadas = jugador.cartas.mesaNormalizadaACuatroCasillas()
+        cartasActualizadas[posicionCarta] = MesaSlots.VACIA
 
         val descarte = sala.mazoDescarte.toMutableList()
-        descarte.add(cartaADescartar)
+        descarte.add(
+            cartaADescartar.copy(
+                descartadaPorJugadorId = jugadorId,
+                descartadaDesdeJuegoMesa = true,
+                comodinRobadoDelDescarteValido = false
+            )
+        )
 
         val updates = mutableMapOf<String, Any>()
         updates["jugadores/$jugadorId/cartas"] = cartasActualizadas
         updates["mazoDescarte"] = descarte
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
+    // ─────────────────────────────────────────
+    // CASTIGO: descarte espontáneo incorrecto
+    // La carta en mesa no se mueve; se roba una carta del pozo y se coloca
+    // en la primera casilla vacía siguiendo el orden visual de la mesa.
+    // ─────────────────────────────────────────
+
+    fun castigoDescarteEspontaneoIncorrecto(
+        salaId: String,
+        jugadorId: String,
+        sala: Sala,
+        onError: (String) -> Unit = {}
+    ) {
+        val jugador = sala.jugadores[jugadorId] ?: run {
+            onError("Jugador no encontrado")
+            return
+        }
+
+        val mesa = jugador.cartas.mesaNormalizadaACuatroCasillas()
+        val hueco = primeraCasillaVaciaOrdenVisual(mesa) ?: run {
+            onError("No hay casilla libre para la carta de castigo")
+            return
+        }
+
+        val pozo = sala.mazoRobar.toMutableList()
+        if (pozo.isEmpty()) {
+            onError("El pozo de robo está vacío")
+            return
+        }
+
+        val castigo = pozo.removeAt(0).limpiarMetaDescarteRobo().copy(abierta = false)
+        mesa[hueco] = castigo
+
+        val updates = mutableMapOf<String, Any>()
+        updates["mazoRobar"] = pozo
+        updates["jugadores/$jugadorId/cartas"] = mesa
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -521,16 +769,24 @@ object GameActions {
         onError: (String) -> Unit = {}
     ) {
         val jugador = sala.jugadores[jugadorId] ?: run { onError("Jugador no encontrado"); return }
-        val cartaADescartar = jugador.cartas.getOrNull(posicionADescartar) ?: run {
+        val cartasJugador = jugador.cartas.mesaNormalizadaACuatroCasillas()
+        val cartaADescartar = cartasJugador.getOrNull(posicionADescartar) ?: run {
             onError("Posición inválida"); return
         }
+        if (cartaADescartar.esSlotVacio()) {
+            onError("Casilla vacía"); return
+        }
 
-        val cartasJugador = jugador.cartas.toMutableList()
-        cartasJugador.removeAt(posicionADescartar)
+        cartasJugador[posicionADescartar] = MesaSlots.VACIA
 
         val adelantado = sala.jugadores[adelantadoId] ?: run { onError("Adelantado no encontrado"); return }
-        val cartasAdelantado = adelantado.cartas.toMutableList()
-        cartasAdelantado.add(cartaADescartar)
+        val cartasAdelantado = adelantado.cartas.mesaNormalizadaACuatroCasillas()
+        val hueco = (0..3).firstOrNull { cartasAdelantado[it].esSlotVacio() }
+        if (hueco == null) {
+            onError("El juego del adelantado no tiene casilla libre")
+            return
+        }
+        cartasAdelantado[hueco] = cartaADescartar
 
         val updates = mutableMapOf<String, Any>()
         updates["jugadores/$jugadorId/cartas"] = cartasJugador
@@ -563,10 +819,10 @@ object GameActions {
         }
 
         // La carta superior se queda en el descarte
-        val cartaSuperior = descarte.removeAt(descarte.lastIndex)
+        val cartaSuperior = descarte.removeAt(descarte.lastIndex).limpiarMetaDescarteRobo()
 
         // El resto se mezcla y pasa al pozo
-        val nuevoPozoMezclado = descarte.shuffled()
+        val nuevoPozoMezclado = descarte.map { it.limpiarMetaDescarteRobo() }.shuffled()
 
         val updates = mutableMapOf<String, Any>()
         updates["mazoRobar"] = nuevoPozoMezclado
@@ -590,31 +846,224 @@ object GameActions {
 
     // Construye el mapa de actualizaciones para un intercambio de dos cartas
     // entre cualquier combinación de jugadores
-    private fun construirUpdatesIntercambio(
+    private fun construirUpdatesIntercambioPorId(
         sala: Sala,
-        cartaA: CartaEnMesa, // ya con propietario/posicion nuevos
-        cartaB: CartaEnMesa
-    ): MutableMap<String, Any> {
-        val updates = mutableMapOf<String, Any>()
-
-        // Actualizar cartas del propietario original de A (ahora recibe B)
-        val jugadorDeA = sala.jugadores[cartaB.propietarioId]
-        if (jugadorDeA != null) {
-            val cartasA = jugadorDeA.cartas.toMutableList()
-            val indexA = cartasA.indexOfFirst { it.id == cartaB.carta.id }
-            if (indexA >= 0) cartasA[indexA] = cartaA.carta
-            updates["jugadores/${cartaB.propietarioId}/cartas"] = cartasA
+        jugadorAId: String,
+        cartaAId: String,
+        jugadorBId: String,
+        cartaBId: String,
+        onError: (String) -> Unit = {}
+    ): MutableMap<String, Any>? {
+        val cartaA = resolverCartaEnMesaPorId(
+            sala = sala,
+            propietarioId = jugadorAId,
+            cartaId = cartaAId
+        ) ?: run {
+            onError("Carta A no encontrada para el intercambio")
+            return null
         }
 
-        // Actualizar cartas del propietario original de B (ahora recibe A)
-        val jugadorDeB = sala.jugadores[cartaA.propietarioId]
-        if (jugadorDeB != null) {
-            val cartasB = jugadorDeB.cartas.toMutableList()
-            val indexB = cartasB.indexOfFirst { it.id == cartaA.carta.id }
-            if (indexB >= 0) cartasB[indexB] = cartaB.carta
-            updates["jugadores/${cartaA.propietarioId}/cartas"] = cartasB
+        val cartaB = resolverCartaEnMesaPorId(
+            sala = sala,
+            propietarioId = jugadorBId,
+            cartaId = cartaBId
+        ) ?: run {
+            onError("Carta B no encontrada para el intercambio")
+            return null
+        }
+
+        if (cartaA.carta.id == cartaB.carta.id) {
+            onError("No puedes intercambiar una carta consigo misma")
+            return null
+        }
+
+        val updates = mutableMapOf<String, Any>()
+
+        if (jugadorAId == jugadorBId) {
+            val cartas = sala.jugadores[jugadorAId]
+                ?.cartas
+                ?.mesaNormalizadaACuatroCasillas()
+                ?: run {
+                    onError("Jugador no encontrado")
+                    return null
+                }
+
+            cartas[cartaA.posicion] = cartaB.carta
+            cartas[cartaB.posicion] = cartaA.carta
+
+            updates["jugadores/$jugadorAId/cartas"] = cartas
+        } else {
+            val cartasA = sala.jugadores[jugadorAId]
+                ?.cartas
+                ?.mesaNormalizadaACuatroCasillas()
+                ?: run {
+                    onError("Jugador A no encontrado")
+                    return null
+                }
+
+            val cartasB = sala.jugadores[jugadorBId]
+                ?.cartas
+                ?.mesaNormalizadaACuatroCasillas()
+                ?: run {
+                    onError("Jugador B no encontrado")
+                    return null
+                }
+
+            cartasA[cartaA.posicion] = cartaB.carta
+            cartasB[cartaB.posicion] = cartaA.carta
+
+            updates["jugadores/$jugadorAId/cartas"] = cartasA
+            updates["jugadores/$jugadorBId/cartas"] = cartasB
         }
 
         return updates
     }
+
+    fun iniciarAnimacionSwap(
+        salaId: String,
+        ejecutorId: String,
+        cartaA: CartaEnMesa,
+        cartaB: CartaEnMesa,
+        mostrarCartaA: Boolean = false,
+        mostrarCartaB: Boolean = false,
+        onListo: () -> Unit = {}
+    ) {
+        val updates = mutableMapOf<String, Any?>()
+
+        updates["swapAnimando/ejecutorId"] = ejecutorId
+
+        updates["swapAnimando/jugadorAId"] = cartaA.propietarioId
+        updates["swapAnimando/cartaAId"] = cartaA.carta.id
+        updates["swapAnimando/valorA"] = cartaA.carta.valor
+
+        updates["swapAnimando/jugadorBId"] = cartaB.propietarioId
+        updates["swapAnimando/cartaBId"] = cartaB.carta.id
+        updates["swapAnimando/valorB"] = cartaB.carta.valor
+
+        updates["swapAnimando/timestampInicio"] = System.currentTimeMillis()
+        updates["swapAnimando/mostrarCartaA"] = mostrarCartaA
+        updates["swapAnimando/mostrarCartaB"] = mostrarCartaB
+
+        salasRef.child(salaId).updateChildren(updates)
+            .addOnSuccessListener { onListo() }
+    }
+
+    fun limpiarAnimacionSwap(salaId: String) {
+        salasRef.child(salaId).child("swapAnimando").removeValue()
+    }
+
+    fun confirmarCambioPropioAnimado(
+        salaId: String,
+        jugadorId: String,
+        sala: Sala,
+        posicionDestino: Int,
+        cartaEnMano: Carta,
+        animacionId: String,
+        onError: (String) -> Unit = {}
+    ) {
+        val jugador = sala.jugadores[jugadorId] ?: run {
+            onError("Jugador no encontrado")
+            return
+        }
+
+        if (posicionDestino !in 0..3) {
+            onError("Posición inválida")
+            return
+        }
+
+        val animacionActual = sala.cambioPropioAnimando
+        if (animacionActual == null || animacionActual.id != animacionId) {
+            onError("La animación de cambio ya no está activa")
+            return
+        }
+
+        val cartasActuales = jugador.cartas.mesaNormalizadaACuatroCasillas()
+        val cartaDesplazada = cartasActuales[posicionDestino]
+
+        cartasActuales[posicionDestino] = cartaEnMano
+
+        val descarte = sala.mazoDescarte.toMutableList()
+
+        if (!cartaDesplazada.esSlotVacio()) {
+            descarte.add(
+                cartaDesplazada.copy(
+                    descartadaPorJugadorId = jugadorId,
+                    descartadaDesdeJuegoMesa = true,
+                    comodinRobadoDelDescarteValido = false
+                )
+            )
+        }
+
+        val updates = mutableMapOf<String, Any?>()
+
+        updates["jugadores/$jugadorId/cartas"] = cartasActuales
+        updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>()
+        updates["mazoDescarte"] = descarte
+        updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+        updates["cambioPropioAnimando"] = null
+        updates["jugadaActual"] = mapOf<String, Any>()
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
+    fun iniciarAnimacionCambioPropio(
+        salaId: String,
+        ejecutorId: String,
+        cartaSeleccionada: CartaEnMesa,
+        cartaEnMano: Carta,
+        onListo: () -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        if (cartaSeleccionada.propietarioId != ejecutorId) {
+            onError("Solo puedes cambiar una carta de tu propio juego")
+            return
+        }
+
+        if (cartaSeleccionada.posicion !in 0..3) {
+            onError("Posición inválida")
+            return
+        }
+
+        val animId = java.util.UUID.randomUUID().toString()
+        val ahora = System.currentTimeMillis()
+
+        val updates = mutableMapOf<String, Any?>()
+
+        updates["cambioPropioAnimando/id"] = animId
+        updates["cambioPropioAnimando/ejecutorId"] = ejecutorId
+        updates["cambioPropioAnimando/jugadorId"] = cartaSeleccionada.propietarioId
+        updates["cambioPropioAnimando/cartaId"] = cartaSeleccionada.carta.id
+        updates["cambioPropioAnimando/posicion"] = cartaSeleccionada.posicion
+        updates["cambioPropioAnimando/cartaEnManoId"] = cartaEnMano.id
+        updates["cambioPropioAnimando/timestampInicio"] = ahora
+        updates["cambioPropioAnimando/duracionSaltoMs"] = 2000L
+        updates["cambioPropioAnimando/duracionViajeMs"] = 750L
+
+        updates["jugadaActual"] = mapOf(
+            "jugadorId" to ejecutorId,
+            "tipo" to "CAMBIO_CARTA_PROPIA",
+            "subaccion" to "Descartando carta propia",
+            "timestamp" to ahora
+        )
+
+        salasRef.child(salaId).updateChildren(updates)
+            .addOnSuccessListener { onListo() }
+            .addOnFailureListener { error ->
+                onError(error.message ?: "No se pudo iniciar la animación")
+            }
+    }
 }
+
+private fun Carta.limpiarMetaDescarteRobo(): Carta =
+    copy(
+        descartadaPorJugadorId = "",
+        descartadaDesdeJuegoMesa = false,
+        comodinRobadoDelDescarteValido = false
+    )
+
+private fun Carta.paraManoTrasRobarDelDescarte(): Carta =
+    copy(
+        descartadaPorJugadorId = "",
+        descartadaDesdeJuegoMesa = false,
+        comodinRobadoDelDescarteValido = valor == "JKR"
+    )

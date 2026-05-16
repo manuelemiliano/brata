@@ -1,7 +1,9 @@
 package com.aguado.bratagame.game
 
 import com.aguado.bratagame.Carta
+import com.aguado.bratagame.Sala
 import com.aguado.bratagame.TipoPoder
+import com.aguado.bratagame.esSlotVacio
 
 // ─────────────────────────────────────────────
 // ACCIONES DISPONIBLES EN EL PANEL DE MANO
@@ -119,38 +121,44 @@ object GameRules {
         }
     }
 
-    // ── Validar si se puede robar del descarte ─
+    // ── Robo desde la cima del descarte ─
+    // La cima solo es robable si quien la puso en la pila fue el jugador inmediato anterior
+    // (orden de [Sala.jugadores]) y la descartó desde sus 4 cartas de juego en mesa.
 
-    // Solo si la carta del descarte perteneció al jugador anterior
-    // y estaba en su juego (mostrando anverso).
-    // Esta validación la hace FirebaseManager comparando el historial,
-    // aquí solo definimos la firma para que GameActions la use.
-    fun puedeRobarDelDescarte(
-        cartaDescarte: Carta,
-        jugadorAnteriorId: String,
-        propietarioOriginalId: String,
-        estabaEnJuego: Boolean   // true = estaba en el cuadrado 2x2, no en mano
-    ): Boolean {
-        return propietarioOriginalId == jugadorAnteriorId && estabaEnJuego
+    fun jugadorInmediatoAnterior(jugadorId: String, sala: Sala): String? {
+        val jugadores = sala.jugadores.keys.toList()
+        if (jugadores.isEmpty()) return null
+        val idx = jugadores.indexOf(jugadorId)
+        if (idx < 0) return null
+        val idxAnt = (idx - 1 + jugadores.size) % jugadores.size
+        return jugadores[idxAnt]
+    }
+
+    fun cimaDelDescartePuedeRobarla(jugadorRobadorId: String, cima: Carta, sala: Sala): Boolean {
+        val anterior = jugadorInmediatoAnterior(jugadorRobadorId, sala) ?: return false
+        if (cima.descartadaPorJugadorId.isEmpty()) return false
+        return cima.descartadaPorJugadorId == anterior && cima.descartadaDesdeJuegoMesa
     }
 
     // ── Puntuación de una mano ─────────────────
 
     fun calcularPuntuacion(cartas: List<Carta>): Int {
+        val cartasReales = cartas.filterNot { it.esSlotVacio() }
+
         // Regla de palos: 4 cartas del mismo palo → 0 puntos
-        if (cartas.size >= 4 && cartas.map { it.palo }.toSet().size == 1) return 0
+        if (cartasReales.size >= 4 && cartasReales.map { it.palo }.toSet().size == 1) return 0
 
         // Regla de números: los 4 iguales → 0 puntos
-        if (cartas.size >= 4 && cartas.map { it.valor }.toSet().size == 1) return 0
+        if (cartasReales.size >= 4 && cartasReales.map { it.valor }.toSet().size == 1) return 0
 
         // Regla de reyes rojos: los dos reyes rojos juntos valen 0 entre ellos
-        val reyesRojos = cartas.filter {
+        val reyesRojos = cartasReales.filter {
             it.valor == "K" && (it.palo == "corazones" || it.palo == "diamantes")
         }
         val cartasSinReyesRojos = if (reyesRojos.size >= 2) {
-            cartas.filter { it !in reyesRojos }
+            cartasReales.filter { it !in reyesRojos }
         } else {
-            cartas
+            cartasReales
         }
 
         return cartasSinReyesRojos.sumOf { valorPuntuacion(it) }

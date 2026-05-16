@@ -18,6 +18,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aguado.bratagame.ui.theme.CasinoGold
 import kotlinx.coroutines.delay
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 
 // ─────────────────────────────────────────────
 // CONTADOR REGRESIVO DE 15 SEGUNDOS
@@ -134,6 +137,7 @@ fun IndicadorTurno(
     nombreJugador: String,
     esMiTurno: Boolean,
     brataActivada: Boolean,
+    detalleJugada: String = "",
     modifier: Modifier = Modifier
 ) {
     val texto = when {
@@ -146,23 +150,41 @@ fun IndicadorTurno(
     val colorFondo = when {
         brataActivada -> Color(0xFFB71C1C)
         esMiTurno -> Color(0xFF1B5E20)
+        detalleJugada.isNotBlank() -> Color(0xFF263238).copy(alpha = 0.88f)
         else -> Color.Black.copy(alpha = 0.65f)
     }
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .background(colorFondo, RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp))
+            .background(
+                colorFondo,
+                RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            text = texto,
-            color = if (esMiTurno) CasinoGold else Color.White,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center
-        )
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = texto,
+                color = if (esMiTurno) CasinoGold else Color.White,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+
+            if (detalleJugada.isNotBlank()) {
+                Spacer(modifier = Modifier.height(2.dp))
+
+                Text(
+                    text = detalleJugada,
+                    color = CasinoGold,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
     }
 }
 

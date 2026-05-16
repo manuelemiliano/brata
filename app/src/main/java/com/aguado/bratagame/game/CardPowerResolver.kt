@@ -5,6 +5,7 @@ import com.aguado.bratagame.CartaEnMesa
 import com.aguado.bratagame.CartaPoderActiva
 import com.aguado.bratagame.Sala
 import com.aguado.bratagame.TipoPoder
+import com.aguado.bratagame.esSlotVacio
 
 // ─────────────────────────────────────────────
 // CARD POWER RESOLVER
@@ -91,20 +92,34 @@ object CardPowerResolver {
 
         return when (tipoPoder) {
             TipoPoder.ESPIAR,
-            TipoPoder.CAMBIAR_VIENDO,
             TipoPoder.CAMBIAR_SIN_VER -> {
                 sala.jugadores.values
                     .flatMap { it.cartas }
+                    .filterNot { it.esSlotVacio() }
                     .map { it.id }
                     .toSet()
             }
+
+            TipoPoder.CAMBIAR_VIENDO -> {
+                val jugadorPoderId = sala.cartaPoderActiva?.jugadorId ?: ""
+
+                sala.jugadores
+                    .filterKeys { it != jugadorPoderId }
+                    .values
+                    .flatMap { it.cartas }
+                    .filterNot { it.esSlotVacio() }
+                    .map { it.id }
+                    .toSet()
+            }
+
             TipoPoder.DESCARTE_FREE_SELECCION -> {
-                // Solo las cartas propias del jugador que activó el descarte free
                 sala.jugadores[sala.cartaPoderActiva?.jugadorId]
                     ?.cartas
+                    ?.filterNot { it.esSlotVacio() }
                     ?.map { it.id }
                     ?.toSet() ?: emptySet()
             }
+
             TipoPoder.NINGUNO -> emptySet()
         }
     }
@@ -119,8 +134,25 @@ object CardPowerResolver {
         carta: Carta,
         sala: Sala
     ): Boolean {
+        if (carta.esSlotVacio()) return false
         val cima = sala.mazoDescarte.lastOrNull() ?: return false
         return carta.valor == cima.valor
+    }
+
+    /**
+     * Clic en una carta propia de la mesa para intentar descarte espontáneo
+     * (animación + acción). No aplica a observadores ni mientras un poder
+     * propio exige otra interacción con la mesa.
+     */
+    fun puedeIniciarDescarteEspontaneoDesdeMesa(
+        sala: Sala,
+        estadoPoder: EstadoPoder,
+        esObservador: Boolean
+    ): Boolean {
+        if (esObservador) return false
+        if (sala.mazoDescarte.isEmpty()) return false
+        if (estadoPoder.hayPoderActivo && estadoPoder.esMiPoder) return false
+        return true
     }
 
     // ─────────────────────────────────────────
@@ -173,11 +205,11 @@ object CardPowerResolver {
 
     fun esComodinRobableDelDescarte(
         cartaDescarte: Carta,
-        jugadorAnteriorId: String,
-        propietarioOriginalId: String
+        jugadorQueRobaId: String,
+        sala: Sala
     ): Boolean {
         return cartaDescarte.valor == "JKR" &&
-                propietarioOriginalId == jugadorAnteriorId
+                GameRules.cimaDelDescartePuedeRobarla(jugadorQueRobaId, cartaDescarte, sala)
     }
 
     // ─────────────────────────────────────────

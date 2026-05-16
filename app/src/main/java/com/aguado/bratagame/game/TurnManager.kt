@@ -32,7 +32,8 @@ object TurnManager {
         val brataActivada: Boolean,
         val esFinalDeRonda: Boolean,
         val puedePresionarBrata: Boolean,
-        val puedeRobar: Boolean
+        val puedeRobar: Boolean,
+        val puedeRobarDelDescarte: Boolean
     )
 
     fun calcularEstadoTurno(
@@ -54,13 +55,18 @@ object TurnManager {
         val puedeRobar = esMiTurno &&
                 (sala.jugadores[jugadorLocalId]?.cartaEnMano == null)
 
+        val cimaDescarte = sala.mazoDescarte.lastOrNull()
+        val puedeRobarDelDescarte = puedeRobar && cimaDescarte != null &&
+                GameRules.cimaDelDescartePuedeRobarla(jugadorLocalId, cimaDescarte, sala)
+
         return EstadoTurno(
             esMiTurno = esMiTurno,
             jugadorEnTurnoNombre = jugadorEnTurno?.nombre ?: "",
             brataActivada = brataActivada,
             esFinalDeRonda = esFinalDeRonda,
             puedePresionarBrata = puedePresionarBrata,
-            puedeRobar = puedeRobar
+            puedeRobar = puedeRobar,
+            puedeRobarDelDescarte = puedeRobarDelDescarte
         )
     }
 
