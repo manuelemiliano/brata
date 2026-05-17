@@ -14,6 +14,11 @@ import com.aguado.bratagame.CadenaDescarte
 import java.util.UUID
 import com.aguado.bratagame.AdelantadoPendiente
 import com.aguado.bratagame.CartaPoderActiva
+import com.aguado.bratagame.Jugador
+import com.aguado.bratagame.VoyPendiente
+import com.google.firebase.database.Transaction
+import com.google.firebase.database.MutableData
+import com.google.firebase.database.DatabaseError
 
 // ─────────────────────────────────────────────
 // GAME ACTIONS
@@ -1059,6 +1064,57 @@ object GameActions {
     // Al volver al jugador que presionó, se evalúan las manos.
     // ─────────────────────────────────────────
 
+
+    fun pasarTurnoBrata(
+        salaId: String,
+        jugadorId: String,
+        sala: Sala,
+        onError: (String) -> Unit = {}
+    ) {
+        if (!sala.brataActivada) {
+            onError("BRATA no está activada")
+            return
+        }
+
+        if (sala.turnoActualId != jugadorId) {
+            onError("No es tu turno")
+            return
+        }
+
+        if (sala.brataJugadorId == jugadorId) {
+            onError("El jugador que presionó BRATA no puede pasar")
+            return
+        }
+
+        val jugador = sala.jugadores[jugadorId] ?: run {
+            onError("Jugador no encontrado")
+            return
+        }
+
+        if (jugador.descalificado) {
+            onError("Jugador descalificado")
+            return
+        }
+
+        if (jugador.cartaEnMano != null) {
+            onError("No puedes pasar con una carta en mano")
+            return
+        }
+
+        val updates = mutableMapOf<String, Any?>()
+
+        updates["jugadaActual"] = mapOf(
+            "jugadorId" to jugadorId,
+            "tipo" to "PASO_BRATA",
+            "subaccion" to "Pasó su turno final",
+            "timestamp" to System.currentTimeMillis()
+        )
+
+        updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
     fun presionarBrata(
         salaId: String,
         jugadorId: String,
@@ -1252,9 +1308,503 @@ object GameActions {
         salasRef.child(salaId).updateChildren(updates)
     }
 
+    fun solicitarRoboDelPozoConVoy(
+        salaId: String,
+        jugadorId: String,
+        sala: Sala,
+        onError: (String) -> Unit = {}
+    ) {
+        val jugador = sala.jugadores[jugadorId] ?: run {
+            onError("Jugador no encontrado")
+            return
+        }
+
+        if (jugador.descalificado) {
+            onError("Jugador descalificado")
+            return
+        }
+
+        if (sala.turnoActualId != jugadorId) {
+            onError("No es tu turno")
+            return
+        }
+
+        if (jugador.cartaEnMano != null) {
+            onError("Ya tienes una carta en mano")
+            return
+        }
+
+        if (sala.voyPendiente?.activo == true) {
+            onError("Hay una regla VOY pendiente")
+            return
+        }
+
+        val cimaDescarte = sala.mazoDescarte.lastOrNull()
+
+        // Si no hay descarte, no hay valor objetivo para VOY.
+        // Roba normal.
+        if (cimaDescarte == null) {
+            robarDelPozo(
+                salaId = salaId,
+                jugadorId = jugadorId,
+                sala = sala,
+                onError = onError
+            )
+            return
+        }
+
+        val voy = VoyPendiente(
+            activo = true,
+            id = "voy_${System.currentTimeMillis()}_${jugadorId}",
+            jugadorRobandoId = jugadorId,
+            valorObjetivo = cimaDescarte.valor,
+            cartaDescarteObjetivoId = cimaDescarte.id,
+            timestampInicio = System.currentTimeMillis(),
+            duracionMs = VOY_DURACION_MS,
+            reclamadoPorJugadorId = "",
+            fase = VOY_FASE_VENTANA
+        )
+
+        val updates = mutableMapOf<String, Any?>()
+        updates["voyPendiente"] = voy
+        updates["jugadaActual"] = mapOf(
+            "jugadorId" to jugadorId,
+            "tipo" to "VOY",
+            "subaccion" to "Intentando robar · oportunidad VOY",
+            "timestamp" to System.currentTimeMillis()
+        )
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
+    fun resolverVoySinReclamo(
+        salaId: String,
+        jugadorId: String,
+        sala: Sala,
+        voyId: String,
+        onError: (String) -> Unit = {}
+    ) {
+        val voy = sala.voyPendiente ?: return
+
+        if (!voy.activo) return
+        if (voy.id != voyId) return
+        if (voy.jugadorRobandoId != jugadorId) return
+        if (voy.fase != VOY_FASE_VENTANA) return
+        if (voy.reclamadoPorJugadorId.isNotBlank()) return
+
+        val ahora = System.currentTimeMillis()
+        val vencida = ahora - voy.timestampInicio >= voy.duracionMs
+
+        if (!vencida) return
+
+        val updates = mutableMapOf<String, Any?>()
+        val mazo = sala.mazoRobar.toMutableList()
+
+        val roboOk = agregarRoboDelPozoAUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorRobandoId = jugadorId,
+            mazoRobarMutable = mazo,
+            onError = onError
+        )
+
+        if (!roboOk) return
+
+        updates["voyPendiente"] = mapOf<String, Any>()
+        updates["jugadaActual"] = mapOf<String, Any>()
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
+    fun reclamarVoy(
+        salaId: String,
+        jugadorId: String,
+        sala: Sala,
+        onResultado: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        val jugador = sala.jugadores[jugadorId]
+
+        if (jugador == null) {
+            onResultado(false, "Jugador no encontrado")
+            return
+        }
+
+        if (jugador.descalificado) {
+            onResultado(false, "Jugador descalificado")
+            return
+        }
+
+        val voyActual = sala.voyPendiente
+
+        if (voyActual == null || !voyActual.activo) {
+            onResultado(false, "No hay VOY pendiente")
+            return
+        }
+
+        if (voyActual.jugadorRobandoId == jugadorId) {
+            onResultado(false, "El jugador que va a robar no puede decir VOY")
+            return
+        }
+
+        if (!jugadorTieneCartaParaEntregar(jugador)) {
+            onResultado(false, "No tienes carta para entregar si aciertas")
+            return
+        }
+
+        val voyRef = salasRef.child(salaId).child("voyPendiente")
+
+        voyRef.runTransaction(object : Transaction.Handler {
+            override fun doTransaction(currentData: MutableData): Transaction.Result {
+                val voy = currentData.getValue(VoyPendiente::class.java)
+                    ?: return Transaction.abort()
+
+                if (!voy.activo) return Transaction.abort()
+                if (voy.fase != VOY_FASE_VENTANA) return Transaction.abort()
+                if (voy.reclamadoPorJugadorId.isNotBlank()) return Transaction.abort()
+                if (voy.jugadorRobandoId == jugadorId) return Transaction.abort()
+
+                val ahora = System.currentTimeMillis()
+                if (ahora - voy.timestampInicio > voy.duracionMs) {
+                    return Transaction.abort()
+                }
+
+                currentData.value = voy.copy(
+                    reclamadoPorJugadorId = jugadorId,
+                    fase = VOY_FASE_SELECCIONANDO_OBJETIVO
+                )
+
+                return Transaction.success(currentData)
+            }
+
+            override fun onComplete(
+                error: DatabaseError?,
+                committed: Boolean,
+                currentData: com.google.firebase.database.DataSnapshot?
+            ) {
+                if (committed) {
+                    salasRef.child(salaId).child("jugadaActual").setValue(
+                        mapOf(
+                            "jugadorId" to jugadorId,
+                            "tipo" to "VOY",
+                            "subaccion" to "Seleccionando carta objetivo",
+                            "timestamp" to System.currentTimeMillis()
+                        )
+                    )
+
+                    onResultado(true, "VOY reclamado")
+                } else {
+                    onResultado(false, "Otro jugador ganó VOY primero")
+                }
+            }
+        })
+    }
+
+    fun seleccionarCartaObjetivoVoy(
+        salaId: String,
+        jugadorId: String,
+        sala: Sala,
+        propietarioObjetivoId: String,
+        posicionObjetivo: Int,
+        onError: (String) -> Unit = {}
+    ) {
+        val voy = sala.voyPendiente ?: run {
+            onError("No hay VOY pendiente")
+            return
+        }
+
+        if (!voy.activo || voy.fase != VOY_FASE_SELECCIONANDO_OBJETIVO) {
+            onError("VOY no está esperando carta objetivo")
+            return
+        }
+
+        if (voy.reclamadoPorJugadorId != jugadorId) {
+            onError("No eres quien reclamó VOY")
+            return
+        }
+
+        if (propietarioObjetivoId == jugadorId) {
+            onError("Debes seleccionar una carta de otro jugador")
+            return
+        }
+
+        if (propietarioObjetivoId == voy.jugadorRobandoId) {
+            onError("No puedes seleccionar carta del jugador que iba a robar")
+            return
+        }
+
+        if (posicionObjetivo !in 0..3) {
+            onError("Posición inválida")
+            return
+        }
+
+        val jugadorObjetivo = sala.jugadores[propietarioObjetivoId] ?: run {
+            onError("Jugador objetivo no encontrado")
+            return
+        }
+
+        val cartasObjetivo = jugadorObjetivo.cartas.mesaNormalizadaACuatroCasillas()
+        val cartaSeleccionada = cartasObjetivo.getOrNull(posicionObjetivo) ?: run {
+            onError("Carta no encontrada")
+            return
+        }
+
+        if (cartaSeleccionada.esSlotVacio()) {
+            onError("No puedes seleccionar una casilla vacía")
+            return
+        }
+
+        val updates = mutableMapOf<String, Any?>()
+        val mazoRobarMutable = sala.mazoRobar.toMutableList()
+
+        val coincide = cartaSeleccionada.valor == voy.valorObjetivo
+
+        if (!coincide) {
+            aplicarCastigoOErrorEnUpdates(
+                updates = updates,
+                sala = sala,
+                jugadorId = jugadorId,
+                mazoRobarMutable = mazoRobarMutable,
+                onError = onError
+            )
+
+            val roboOk = agregarRoboDelPozoAUpdates(
+                updates = updates,
+                sala = sala,
+                jugadorRobandoId = voy.jugadorRobandoId,
+                mazoRobarMutable = mazoRobarMutable,
+                onError = onError
+            )
+
+            if (!roboOk) return
+
+            updates["voyPendiente"] = mapOf<String, Any>()
+            updates["jugadaActual"] = mapOf<String, Any>()
+
+            salasRef.child(salaId).updateChildren(updates)
+            return
+        }
+
+        // VOY correcto:
+        // la carta objetivo se descarta, pero no encadena y no altera turno.
+        cartasObjetivo[posicionObjetivo] = MesaSlots.VACIA
+
+        val descarte = sala.mazoDescarte.toMutableList()
+        descarte.add(
+            cartaSeleccionada.copy(
+                descartadaPorJugadorId = jugadorId,
+                descartadaDesdeJuegoMesa = true,
+                comodinRobadoDelDescarteValido = false
+            )
+        )
+
+        updates["jugadores/$propietarioObjetivoId/cartas"] = cartasObjetivo
+        updates["mazoDescarte"] = descarte
+
+        updates["voyPendiente"] = voy.copy(
+            fase = VOY_FASE_SELECCIONANDO_ENTREGA,
+            jugadorObjetivoId = propietarioObjetivoId,
+            posicionObjetivo = posicionObjetivo,
+            cartaObjetivoId = cartaSeleccionada.id
+        )
+
+        updates["jugadaActual"] = mapOf(
+            "jugadorId" to jugadorId,
+            "tipo" to "VOY",
+            "subaccion" to "Acertó · seleccionando carta propia para entregar",
+            "timestamp" to System.currentTimeMillis()
+        )
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
+    fun entregarCartaPropiaVoy(
+        salaId: String,
+        jugadorId: String,
+        sala: Sala,
+        posicionCartaPropia: Int,
+        onError: (String) -> Unit = {}
+    ) {
+        val voy = sala.voyPendiente ?: run {
+            onError("No hay VOY pendiente")
+            return
+        }
+
+        if (!voy.activo || voy.fase != VOY_FASE_SELECCIONANDO_ENTREGA) {
+            onError("VOY no está esperando carta propia")
+            return
+        }
+
+        if (voy.reclamadoPorJugadorId != jugadorId) {
+            onError("No eres quien debe entregar carta")
+            return
+        }
+
+        if (voy.jugadorObjetivoId.isBlank() || voy.posicionObjetivo !in 0..3) {
+            onError("Datos de VOY incompletos")
+            return
+        }
+
+        if (posicionCartaPropia !in 0..3) {
+            onError("Posición propia inválida")
+            return
+        }
+
+        val jugadorVoy = sala.jugadores[jugadorId] ?: run {
+            onError("Jugador VOY no encontrado")
+            return
+        }
+
+        val jugadorObjetivo = sala.jugadores[voy.jugadorObjetivoId] ?: run {
+            onError("Jugador objetivo no encontrado")
+            return
+        }
+
+        val cartasVoy = jugadorVoy.cartas.mesaNormalizadaACuatroCasillas()
+        val cartaAEntregar = cartasVoy[posicionCartaPropia]
+
+        if (cartaAEntregar.esSlotVacio()) {
+            onError("No puedes entregar una casilla vacía")
+            return
+        }
+
+        val cartasObjetivo = jugadorObjetivo.cartas.mesaNormalizadaACuatroCasillas()
+
+        if (!cartasObjetivo[voy.posicionObjetivo].esSlotVacio()) {
+            onError("El espacio objetivo ya no está vacío")
+            return
+        }
+
+        cartasVoy[posicionCartaPropia] = MesaSlots.VACIA
+        cartasObjetivo[voy.posicionObjetivo] = cartaAEntregar
+            .limpiarMetaDescarteRobo()
+            .copy(abierta = false)
+
+        val updates = mutableMapOf<String, Any?>()
+        val mazoRobarMutable = sala.mazoRobar.toMutableList()
+
+        val roboOk = agregarRoboDelPozoAUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorRobandoId = voy.jugadorRobandoId,
+            mazoRobarMutable = mazoRobarMutable,
+            onError = onError
+        )
+
+        if (!roboOk) return
+
+        updates["jugadores/$jugadorId/cartas"] = cartasVoy
+        updates["jugadores/${voy.jugadorObjetivoId}/cartas"] = cartasObjetivo
+
+        updates["voyPendiente"] = mapOf<String, Any>()
+        updates["jugadaActual"] = mapOf<String, Any>()
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
     // ─────────────────────────────────────────
     // HELPERS PRIVADOS
     // ─────────────────────────────────────────
+
+
+    private const val VOY_FASE_VENTANA = "VENTANA"
+    private const val VOY_FASE_SELECCIONANDO_OBJETIVO = "SELECCIONANDO_OBJETIVO"
+    private const val VOY_FASE_SELECCIONANDO_ENTREGA = "SELECCIONANDO_ENTREGA"
+    private const val VOY_DURACION_MS = 2000L
+
+    private fun jugadorTieneCartaParaEntregar(jugador: Jugador): Boolean {
+        return jugador.cartas
+            .mesaNormalizadaACuatroCasillas()
+            .any { !it.esSlotVacio() }
+    }
+
+    private fun agregarRoboDelPozoAUpdates(
+        updates: MutableMap<String, Any?>,
+        sala: Sala,
+        jugadorRobandoId: String,
+        mazoRobarMutable: MutableList<Carta>,
+        onError: (String) -> Unit = {}
+    ): Boolean {
+        val jugador = sala.jugadores[jugadorRobandoId] ?: run {
+            onError("Jugador que iba a robar no encontrado")
+            return false
+        }
+
+        if (jugador.descalificado) {
+            onError("El jugador que iba a robar está descalificado")
+            return false
+        }
+
+        if (jugador.cartaEnMano != null) {
+            onError("El jugador ya tiene una carta en mano")
+            return false
+        }
+
+        if (mazoRobarMutable.isEmpty()) {
+            onError("El pozo de robo está vacío")
+            return false
+        }
+
+        val cartaRobada = mazoRobarMutable
+            .removeAt(0)
+            .limpiarMetaDescarteRobo()
+            .copy(abierta = true)
+
+        updates["mazoRobar"] = mazoRobarMutable
+        updates["jugadores/$jugadorRobandoId/cartaEnMano"] = cartaRobada
+
+        romperCadenaSiJugadorEsperado(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorRobandoId
+        )
+
+        return true
+    }
+
+    private fun aplicarCastigoOErrorEnUpdates(
+        updates: MutableMap<String, Any?>,
+        sala: Sala,
+        jugadorId: String,
+        mazoRobarMutable: MutableList<Carta>,
+        onError: (String) -> Unit = {}
+    ) {
+        val jugador = sala.jugadores[jugadorId] ?: run {
+            onError("Jugador no encontrado para castigo")
+            return
+        }
+
+        val mesa = jugador.cartas.mesaNormalizadaACuatroCasillas()
+        val hueco = primeraCasillaVaciaOrdenVisual(mesa)
+
+        if (hueco != null && mazoRobarMutable.isNotEmpty()) {
+            val castigo = mazoRobarMutable
+                .removeAt(0)
+                .limpiarMetaDescarteRobo()
+                .copy(abierta = false)
+
+            mesa[hueco] = castigo
+
+            updates["jugadores/$jugadorId/cartas"] = mesa
+            updates["mazoRobar"] = mazoRobarMutable
+
+            onError("VOY incorrecto: recibe carta de castigo")
+            return
+        }
+
+        val nuevosErrores = (jugador.erroresDescarte + 1).coerceAtMost(3)
+        val quedaDescalificado = nuevosErrores >= 3
+
+        updates["jugadores/$jugadorId/erroresDescarte"] = nuevosErrores
+        updates["jugadores/$jugadorId/descalificado"] = quedaDescalificado
+
+        onError(
+            if (quedaDescalificado) {
+                "VOY incorrecto: tercer error, jugador descalificado"
+            } else {
+                "VOY incorrecto: error $nuevosErrores de 3"
+            }
+        )
+    }
 
     private fun esValorCartaEspia(valor: String): Boolean {
         return valor in listOf("5", "6", "7", "8", "9", "10")

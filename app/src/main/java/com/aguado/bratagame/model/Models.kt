@@ -179,7 +179,42 @@ data class Sala(
 
     var cadenaDescarte: CadenaDescarte? = null,
 
-    var adelantadoPendiente: AdelantadoPendiente? = null
+    var adelantadoPendiente: AdelantadoPendiente? = null,
+
+    // Regla VOY: ventana temporal antes del robo.
+    var voyPendiente: VoyPendiente? = null
+)
+
+data class VoyPendiente(
+    val activo: Boolean = false,
+
+    // Identidad única de esta ventana VOY.
+    val id: String = "",
+
+    // Jugador que intentó robar y cuyo robo queda pausado.
+    val jugadorRobandoId: String = "",
+
+    // Valor de la cima del descarte al momento de intentar robar.
+    val valorObjetivo: String = "",
+    val cartaDescarteObjetivoId: String = "",
+
+    // Control de ventana temporal.
+    val timestampInicio: Long = 0L,
+    val duracionMs: Long = 2000L,
+
+    // Primer jugador que presionó VOY.
+    val reclamadoPorJugadorId: String = "",
+
+    // Fases:
+    // VENTANA
+    // SELECCIONANDO_OBJETIVO
+    // SELECCIONANDO_ENTREGA
+    val fase: String = "VENTANA",
+
+    // Carta correcta seleccionada por quien dijo VOY.
+    val jugadorObjetivoId: String = "",
+    val posicionObjetivo: Int = -1,
+    val cartaObjetivoId: String = ""
 )
 
 data class CadenaDescarte(

@@ -110,6 +110,7 @@ object FirebaseManager {
         actualizaciones["cambioPropioAnimando"] = null
         actualizaciones["cadenaDescarte"] = mapOf<String, Any>()
         actualizaciones["adelantadoPendiente"] = mapOf<String, Any>()
+        actualizaciones["voyPendiente"] = mapOf<String, Any>()
 
         // 8. Marcar juego iniciado — dispara navegación en todos los clientes
         actualizaciones["estaEnJuego"] = true
