@@ -250,21 +250,27 @@ fun CartaEspiandoOverlay(
     revelarValor: Boolean = false
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "espiaLoop")
+
+    // Aumentamos el desplazamiento de la animación.
+    // El tiempo se conserva igual; solo se mueve más.
     val salto by infiniteTransition.animateFloat(
         initialValue = 0f,
-        targetValue = -12f,
+        targetValue = -22f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 500, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "saltoContinuo"
     )
+
     Box(modifier = modifier) {
         CartaVisual(
             abierta = revelarValor,
             valor = carta.carta.valor,
             palo = mappingPalo(carta.carta.palo),
-            modifier = Modifier.graphicsLayer { translationY = salto }
+            modifier = Modifier.graphicsLayer {
+                translationY = salto
+            }
         )
     }
 }
