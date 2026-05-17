@@ -79,14 +79,26 @@ class MainActivity : ComponentActivity() {
 
                     if (sala != null) {
 
-                        // Evento 1: Inicio de partida o revancha
-                        if (sala.estaEnJuego &&
-                            (pantalla == Pantalla.LOBBY || pantalla == Pantalla.RESULTADO)
+                        // Evento 1: La sala volvió al lobby desde resultados.
+                        // Esto permite que todos los dispositivos regresen al lobby
+                        // cuando un jugador presiona el botón LOBBY en resultados.
+                        if (
+                            pantalla == Pantalla.RESULTADO &&
+                            !sala.estaEnJuego
+                        ) {
+                            pantalla = Pantalla.LOBBY
+                        }
+
+                        // Evento 2: Inicio de partida o revancha.
+                        // Si inicia una nueva partida desde lobby, todos entran a mesa.
+                        if (
+                            pantalla == Pantalla.LOBBY &&
+                            sala.estaEnJuego
                         ) {
                             pantalla = Pantalla.MESA
                         }
 
-                        // Evento 2: Fin de ronda
+                        // Evento 3: Fin de ronda
                         // Puede terminar por BRATA o porque solo queda un jugador activo.
                         if (
                             pantalla == Pantalla.MESA &&
@@ -95,7 +107,7 @@ class MainActivity : ComponentActivity() {
                             pantalla = Pantalla.RESULTADO
                         }
 
-                        // Evento 3: Jugador expulsado o anfitrión cerró la sala
+                        // Evento 4: Jugador expulsado o anfitrión cerró la sala
                         if (!sala.jugadores.containsKey(jugadorActual?.id) &&
                             pantalla != Pantalla.LOGIN
                         ) {
@@ -237,7 +249,18 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                             onIrAlLobby = {
-                                pantalla = Pantalla.LOBBY
+                                val salaId = idSalaActual
+
+                                if (salaId != null) {
+                                    FirebaseManager.volverSalaAlLobby(
+                                        salaId = salaId,
+                                        sala = sala
+                                    ) { exito ->
+                                        if (exito) {
+                                            pantalla = Pantalla.LOBBY
+                                        }
+                                    }
+                                }
                             },
                             onIrAlInicio = {
                                 val salaId = idSalaActual

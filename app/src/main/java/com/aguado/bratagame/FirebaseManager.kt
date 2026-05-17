@@ -143,6 +143,58 @@ object FirebaseManager {
     // LOBBY
     // ─────────────────────────────────────────
 
+    fun volverSalaAlLobby(
+        salaId: String,
+        sala: Sala,
+        onComplete: (Boolean) -> Unit = {}
+    ) {
+        val actualizaciones = mutableMapOf<String, Any?>()
+
+        // La sala vuelve a estar disponible como lobby.
+        actualizaciones["estaEnJuego"] = false
+        actualizaciones["estaActiva"] = true
+
+        // Estados generales de partida.
+        actualizaciones["turnoActualId"] = ""
+        actualizaciones["mazoRobar"] = emptyList<Carta>()
+        actualizaciones["mazoDescarte"] = emptyList<Carta>()
+        actualizaciones["timestampInicioContador"] = 0L
+
+        // Estados de BRATA.
+        actualizaciones["brataActivada"] = false
+        actualizaciones["brataJugadorId"] = ""
+
+        // Estados de poderes / animaciones / jugadas.
+        actualizaciones["cartaPoderActiva"] = mapOf<String, Any>()
+        actualizaciones["jugadaActual"] = mapOf<String, Any>()
+        actualizaciones["swapAnimando"] = mapOf<String, Any>()
+        actualizaciones["cambioPropioAnimando"] = null
+        actualizaciones["cadenaDescarte"] = mapOf<String, Any>()
+
+        // Estados nuevos si existen en tu modelo.
+        actualizaciones["adelantadoPendiente"] = mapOf<String, Any>()
+        actualizaciones["voyPendiente"] = mapOf<String, Any>()
+
+        // Reiniciar jugadores, pero conservarlos en la sala.
+        sala.jugadores.values.forEach { jugador ->
+            actualizaciones["jugadores/${jugador.id}/cartas"] = emptyList<Carta>()
+            actualizaciones["jugadores/${jugador.id}/cartaEnMano"] = mapOf<String, Any>()
+            actualizaciones["jugadores/${jugador.id}/estaListo"] = false
+            actualizaciones["jugadores/${jugador.id}/erroresDescarte"] = 0
+            actualizaciones["jugadores/${jugador.id}/descalificado"] = false
+
+            // Conservamos presencia.
+            actualizaciones["jugadores/${jugador.id}/conectado"] = jugador.conectado
+            actualizaciones["jugadores/${jugador.id}/ultimaConexion"] = System.currentTimeMillis()
+        }
+
+        salasRef.child(salaId)
+            .updateChildren(actualizaciones)
+            .addOnCompleteListener { task ->
+                onComplete(task.isSuccessful)
+            }
+    }
+
     fun cambiarEstadoListo(salaId: String, jugadorId: String, estaListo: Boolean) {
         salasRef.child(salaId)
             .child("jugadores")
