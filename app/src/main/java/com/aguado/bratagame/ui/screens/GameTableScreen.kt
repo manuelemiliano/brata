@@ -2370,13 +2370,18 @@ private fun CartaCambioPropioADescarteAnimation(
             val easingViaje = FastOutSlowInEasing.transform(viajeProgress)
 
             /*
-             * IMPORTANTE:
-             * Este salto NO debe depender de la rotación del jugador.
-             * Aunque la carta venga de un jugador lateral, el salto debe ser
-             * vertical en la pantalla, no hacia los lados.
-             */
-            val saltoYGlobal = if (elapsed < duracionSaltoMs) {
-                -22f * kotlin.math.sin(
+ * La carta conserva la orientación del jugador al inicio.
+ * Usamos esa rotación también para decidir el eje del salto.
+ */
+            val rotacionOrigen = holder?.rotationOf(cartaEnMesa.propietarioId) ?: 0f
+            val rotacionNormalizada = ((rotacionOrigen % 360f) + 360f) % 360f
+
+            val esJugadorLateral =
+                rotacionNormalizada in 45f..135f ||
+                        rotacionNormalizada in 225f..315f
+
+            val impulsoSalto = if (elapsed < duracionSaltoMs) {
+                22f * kotlin.math.sin(
                     saltoProgress * Math.PI.toFloat() * 6f
                 )
             } else {
@@ -2384,10 +2389,35 @@ private fun CartaCambioPropioADescarteAnimation(
             }
 
             /*
-             * La carta sí conserva la orientación del jugador al inicio,
-             * pero durante el viaje gira hasta quedar orientada como el mazo.
+             * Jugadores inferior/superior:
+             * salto vertical en pantalla.
+             *
+             * Jugadores laterales:
+             * salto horizontal en pantalla, sobre el eje largo de la carta.
+             *
+             * Esto hace que para quien observa la mesa, las cartas laterales
+             * parezcan saltar arriba-abajo respecto al jugador virtual.
              */
-            val rotacionOrigen = holder?.rotationOf(cartaEnMesa.propietarioId) ?: 0f
+            val saltoXGlobal = if (esJugadorLateral) {
+                if (rotacionNormalizada in 45f..135f) {
+                    impulsoSalto
+                } else {
+                    -impulsoSalto
+                }
+            } else {
+                0f
+            }
+
+            val saltoYGlobal = if (esJugadorLateral) {
+                0f
+            } else {
+                -impulsoSalto
+            }
+
+            /*
+             * Durante el viaje al descarte, la carta gira hasta quedar
+             * orientada como el mazo.
+             */
             val rotacionDestino = 0f
 
             val diferenciaRotacion =
@@ -2398,7 +2428,7 @@ private fun CartaCambioPropioADescarteAnimation(
 
             Box(
                 modifier = Modifier.graphicsLayer {
-                    translationX = startX + dx * easingViaje
+                    translationX = startX + dx * easingViaje + saltoXGlobal
                     translationY = startY + dy * easingViaje + saltoYGlobal
 
                     scaleX = 1f - (0.08f * easingViaje)
