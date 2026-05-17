@@ -40,7 +40,16 @@ object TurnManager {
         jugadorLocalId: String,
         sala: Sala
     ): EstadoTurno {
-        val esMiTurno = sala.turnoActualId == jugadorLocalId
+
+        val jugadorLocal = sala.jugadores[jugadorLocalId]
+        val jugadorLocalDescalificado = jugadorLocal?.descalificado == true
+        val rondaFinalizada = debeEvaluarFinal(sala)
+
+        val esMiTurno =
+            sala.turnoActualId == jugadorLocalId &&
+                    !jugadorLocalDescalificado &&
+                    !rondaFinalizada
+
         val jugadorEnTurno = sala.jugadores[sala.turnoActualId]
         val brataActivada = sala.brataActivada
 
@@ -49,11 +58,18 @@ object TurnManager {
 
         // Solo puede presionar BRATA el jugador en turno, antes de robar,
         // y solo si la Brata no fue activada aún
-        val puedePresionarBrata = esMiTurno && !brataActivada &&
-                (sala.jugadores[jugadorLocalId]?.cartaEnMano == null)
+        val puedePresionarBrata =
+            esMiTurno &&
+                    !brataActivada &&
+                    !jugadorLocalDescalificado &&
+                    !rondaFinalizada &&
+                    jugadorLocal?.cartaEnMano == null
 
-        val puedeRobar = esMiTurno &&
-                (sala.jugadores[jugadorLocalId]?.cartaEnMano == null)
+        val puedeRobar =
+            esMiTurno &&
+                    !jugadorLocalDescalificado &&
+                    !rondaFinalizada &&
+                    jugadorLocal?.cartaEnMano == null
 
         val cimaDescarte = sala.mazoDescarte.lastOrNull()
         val puedeRobarDelDescarte = puedeRobar && cimaDescarte != null &&
@@ -103,9 +119,16 @@ object TurnManager {
     // ─────────────────────────────────────────
 
     fun debeEvaluarFinal(sala: Sala): Boolean {
-        return sala.brataActivada && sala.turnoActualId == sala.brataJugadorId
-    }
+        val jugadoresActivos = sala.jugadores.values.count { !it.descalificado }
 
+        val finalPorDescalificacion =
+            sala.estaEnJuego && sala.jugadores.isNotEmpty() && jugadoresActivos <= 1
+
+        val finalPorBrata =
+            sala.brataActivada && sala.turnoActualId == sala.brataJugadorId
+
+        return finalPorDescalificacion || finalPorBrata
+    }
     // ─────────────────────────────────────────
     // ORDEN DE JUGADORES DESDE LA PERSPECTIVA LOCAL
     // Devuelve los IDs en orden horario empezando
@@ -132,8 +155,29 @@ object TurnManager {
     private fun siguienteTurno(jugadorActualId: String, sala: Sala): String {
         val jugadores = sala.jugadores.keys.toList()
         if (jugadores.isEmpty()) return ""
+
         val indexActual = jugadores.indexOf(jugadorActualId)
-        val indexSiguiente = (indexActual + 1) % jugadores.size
-        return jugadores[indexSiguiente]
+
+        if (indexActual < 0) {
+            return jugadores.firstOrNull { id ->
+                sala.jugadores[id]?.descalificado != true
+            } ?: jugadores.first()
+        }
+
+        var offset = 1
+
+        while (offset <= jugadores.size) {
+            val indexSiguiente = (indexActual + offset) % jugadores.size
+            val candidatoId = jugadores[indexSiguiente]
+            val candidato = sala.jugadores[candidatoId]
+
+            if (candidato?.descalificado != true) {
+                return candidatoId
+            }
+
+            offset++
+        }
+
+        return jugadorActualId
     }
 }

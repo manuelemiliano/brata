@@ -12,12 +12,16 @@ import com.aguado.bratagame.esSlotVacio
 // ─────────────────────────────────────────────
 
 enum class AccionMano {
-    CAMBIAR,             // Cambiar la carta de mano por una propia (todas las cartas)
-    DESCARTAR,           // Descartar directamente al pozo de descarte
-    ACTIVAR_PODER,       // Activar el poder especial de la carta
-    DESCARTAR_FREE,      // Descarte gratuito (regla de consecutivos o carta igual)
-    SELECCIONAR_COMODIN, // Elegir el valor del comodín antes de jugarlo
-    REGRESAR             // Solo durante espía: devolver la carta espiada a su lugar
+    CAMBIAR,
+    DESCARTAR,
+    ACTIVAR_PODER,
+    DESCARTAR_FREE,
+    SELECCIONAR_COMODIN,
+    REGRESAR,
+    TOMAR,
+
+    // Regla del adelantado durante carta espía pendiente.
+    ROBAR_DESCARTE
 }
 
 // ─────────────────────────────────────────────

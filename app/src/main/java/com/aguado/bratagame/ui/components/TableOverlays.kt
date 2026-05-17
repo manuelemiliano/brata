@@ -279,7 +279,7 @@ fun SelectorComodin(
     onDismiss: () -> Unit
 ) {
     val palos = listOf("corazones", "picas", "diamantes", "treboles")
-    val valores = listOf("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
+    val valores = listOf("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "JKR")
 
     var valorSeleccionado by remember { mutableStateOf<String?>(null) }
     var paloSeleccionado by remember { mutableStateOf<String?>(null) }

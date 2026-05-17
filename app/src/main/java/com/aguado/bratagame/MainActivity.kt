@@ -11,20 +11,26 @@ import com.aguado.bratagame.ui.screens.LoginScreen
 import com.aguado.bratagame.ui.screens.ResultScreen
 import java.util.UUID
 import android.content.Context
+import com.aguado.bratagame.game.TurnManager
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        val prefs = getSharedPreferences("brata_prefs", Context.MODE_PRIVATE)
+
         setContent {
-            // ID único por dispositivo — evita duplicados al reconectar
+            // ID persistente por dispositivo.
+            // Permite reconectar a una partida si la app se cerró por error.
             val idUsuarioUnico = rememberSaveable {
-                val prefs = getSharedPreferences("brata_prefs", Context.MODE_PRIVATE)
                 val existente = prefs.getString("jugador_id", null)
 
                 if (existente != null) {
                     existente
                 } else {
                     val nuevo = UUID.randomUUID().toString()
-                    prefs.edit().putString("jugador_id", nuevo).apply()
+                    prefs.edit()
+                        .putString("jugador_id", nuevo)
+                        .apply()
                     nuevo
                 }
             }
@@ -34,11 +40,34 @@ class MainActivity : ComponentActivity() {
             var salaActual by remember { mutableStateOf<Sala?>(null) }
             var pantalla by remember { mutableStateOf(Pantalla.LOGIN) }
 
+            LaunchedEffect(Unit) {
+                val salaGuardada = prefs.getString("sala_id", null)
+                val nombreGuardado = prefs.getString("jugador_nombre", null)
+
+                if (salaGuardada != null && nombreGuardado != null) {
+                    FirebaseManager.reconectarJugadorASala(
+                        salaId = salaGuardada,
+                        jugadorId = idUsuarioUnico
+                    ) { exito ->
+                        if (exito) {
+                            jugadorActual = Jugador(
+                                id = idUsuarioUnico,
+                                nombre = nombreGuardado
+                            )
+
+                            idSalaActual = salaGuardada
+                            pantalla = Pantalla.MESA
+                        } else {
+                            prefs.edit()
+                                .remove("sala_id")
+                                .remove("jugador_nombre")
+                                .apply()
+                        }
+                    }
+                }
+            }
+
             // ── Listener central de Firebase ──────────
-            // Detecta tres eventos y navega en todos los dispositivos:
-            //   1. Inicio de partida / revancha → MESA
-            //   2. Fin de ronda (Brata completó vuelta) → RESULTADO
-            //   3. Jugador expulsado o sala eliminada → LOGIN
             DisposableEffect(idSalaActual) {
                 val salaId = idSalaActual
                 if (salaId == null) {
@@ -58,9 +87,10 @@ class MainActivity : ComponentActivity() {
                         }
 
                         // Evento 2: Fin de ronda
-                        if (pantalla == Pantalla.MESA &&
-                            sala.brataActivada &&
-                            sala.turnoActualId == sala.brataJugadorId
+                        // Puede terminar por BRATA o porque solo queda un jugador activo.
+                        if (
+                            pantalla == Pantalla.MESA &&
+                            TurnManager.debeEvaluarFinal(sala)
                         ) {
                             pantalla = Pantalla.RESULTADO
                         }
@@ -106,6 +136,11 @@ class MainActivity : ComponentActivity() {
                             val nombreMesa = idSala.removePrefix("CREAR_SALA:")
                             FirebaseManager.crearSala(nombreMesa, jugador) { idGenerado ->
                                 if (idGenerado != null) {
+                                    prefs.edit()
+                                        .putString("sala_id", idGenerado)
+                                        .putString("jugador_nombre", jugador.nombre)
+                                        .apply()
+
                                     idSalaActual = idGenerado
                                     pantalla = Pantalla.LOBBY
                                 }
@@ -113,6 +148,11 @@ class MainActivity : ComponentActivity() {
                         } else {
                             FirebaseManager.unirseASala(idSala, jugador) { exito ->
                                 if (exito) {
+                                    prefs.edit()
+                                        .putString("sala_id", idSala)
+                                        .putString("jugador_nombre", jugador.nombre)
+                                        .apply()
+
                                     idSalaActual = idSala
                                     pantalla = Pantalla.LOBBY
                                 }
@@ -131,6 +171,12 @@ class MainActivity : ComponentActivity() {
                             idSalaInicial = salaId,
                             onSalirAlLogin = {
                                 FirebaseManager.salirDeSala(salaId, jugador.id, jugador.esAnfitrion)
+
+                                prefs.edit()
+                                    .remove("sala_id")
+                                    .remove("jugador_nombre")
+                                    .apply()
+
                                 jugadorActual = null
                                 idSalaActual = null
                                 salaActual = null
@@ -155,6 +201,12 @@ class MainActivity : ComponentActivity() {
                             idSala = salaId,
                             onSalir = {
                                 FirebaseManager.salirDeSala(salaId, jugador.id, jugador.esAnfitrion)
+
+                                prefs.edit()
+                                    .remove("sala_id")
+                                    .remove("jugador_nombre")
+                                    .apply()
+
                                 jugadorActual = null
                                 idSalaActual = null
                                 salaActual = null
@@ -172,18 +224,17 @@ class MainActivity : ComponentActivity() {
                         ResultScreen(
                             sala = sala,
                             jugadorLocalId = jugador.id,
+                            esAnfitrion = jugador.esAnfitrion,
                             onRevancha = {
-                                // Solo el anfitrión llama iniciarPartida
-                                // Los demás navegan via Evento 1 del listener
                                 if (jugador.esAnfitrion) {
                                     val salaId = idSalaActual ?: return@ResultScreen
                                     FirebaseManager.iniciarPartida(
                                         salaId = salaId,
                                         jugadores = sala.jugadores.values.toList()
                                     )
+
+                                    pantalla = Pantalla.MESA
                                 }
-                                // El anfitrión navega localmente, los demás via listener
-                                pantalla = Pantalla.MESA
                             },
                             onIrAlLobby = {
                                 pantalla = Pantalla.LOBBY
@@ -193,6 +244,12 @@ class MainActivity : ComponentActivity() {
                                 if (salaId != null) {
                                     FirebaseManager.salirDeSala(salaId, jugador.id, jugador.esAnfitrion)
                                 }
+
+                                prefs.edit()
+                                    .remove("sala_id")
+                                    .remove("jugador_nombre")
+                                    .apply()
+
                                 jugadorActual = null
                                 idSalaActual = null
                                 salaActual = null

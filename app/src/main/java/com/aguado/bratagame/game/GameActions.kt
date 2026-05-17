@@ -10,7 +10,10 @@ import com.aguado.bratagame.esSlotVacio
 import com.aguado.bratagame.mesaNormalizadaACuatroCasillas
 import com.aguado.bratagame.primeraCasillaVaciaOrdenVisual
 import com.google.firebase.database.FirebaseDatabase
+import com.aguado.bratagame.CadenaDescarte
 import java.util.UUID
+import com.aguado.bratagame.AdelantadoPendiente
+import com.aguado.bratagame.CartaPoderActiva
 
 // ─────────────────────────────────────────────
 // GAME ACTIONS
@@ -28,6 +31,24 @@ object GameActions {
 
     private val salasRef by lazy {
         FirebaseDatabase.getInstance().getReference("salas")
+    }
+
+    private fun jugadorPuedeActuar(
+        sala: Sala,
+        jugadorId: String,
+        onError: (String) -> Unit
+    ): Boolean {
+        val jugador = sala.jugadores[jugadorId] ?: run {
+            onError("Jugador no encontrado")
+            return false
+        }
+
+        if (jugador.descalificado) {
+            onError("Jugador descalificado")
+            return false
+        }
+
+        return true
     }
 
     // ─────────────────────────────────────────
@@ -72,6 +93,8 @@ object GameActions {
         sala: Sala,
         onError: (String) -> Unit = {}
     ) {
+        if (!jugadorPuedeActuar(sala, jugadorId, onError)) return
+
         val mazo = sala.mazoRobar.toMutableList()
         if (mazo.isEmpty()) {
             onError("El pozo de robo está vacío")
@@ -79,13 +102,19 @@ object GameActions {
         }
 
         val cartaRobada = mazo.removeAt(0).limpiarMetaDescarteRobo()
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
 
         // Quitar carta del pozo
         updates["mazoRobar"] = mazo
 
         // Registrar carta en mano del jugador
         updates["jugadores/$jugadorId/cartaEnMano"] = cartaRobada
+
+        romperCadenaSiJugadorEsperado(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId
+        )
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -102,6 +131,8 @@ object GameActions {
         sala: Sala,
         onError: (String) -> Unit = {}
     ) {
+        if (!jugadorPuedeActuar(sala, jugadorId, onError)) return
+
         if (sala.turnoActualId != jugadorId) {
             onError("No es tu turno")
             return
@@ -125,10 +156,16 @@ object GameActions {
 
         val cartaRobada = descarte.removeAt(descarte.lastIndex)
         val paraMano = cartaRobada.paraManoTrasRobarDelDescarte()
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
 
         updates["mazoDescarte"] = descarte
         updates["jugadores/$jugadorId/cartaEnMano"] = paraMano
+
+        romperCadenaSiJugadorEsperado(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId
+        )
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -146,6 +183,8 @@ object GameActions {
         cartaEnMano: Carta,
         onError: (String) -> Unit = {}
     ) {
+        if (!jugadorPuedeActuar(sala, jugadorId, onError)) return
+
         val descarte = sala.mazoDescarte.toMutableList()
         descarte.add(
             cartaEnMano.copy(
@@ -155,11 +194,23 @@ object GameActions {
             )
         )
 
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
         updates["mazoDescarte"] = descarte
         updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>()
         updates["jugadaActual"] = mapOf<String, Any>()
-        updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+
+        aplicarAvancePorDescarteEncadenado(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            valorDescartado = cartaEnMano.valor
+        )
+
+        limpiarAdelantadoPendienteSiPerteneceA(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId
+        )
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -205,12 +256,76 @@ object GameActions {
             )
         }
 
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
         updates["jugadores/$jugadorId/cartas"] = cartasActuales
         updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>()
         updates["mazoDescarte"] = descarte
         updates["jugadaActual"] = mapOf<String, Any>()
+
+        if (!cartaDesplazada.esSlotVacio()) {
+            aplicarAvancePorDescarteEncadenado(
+                updates = updates,
+                sala = sala,
+                jugadorId = jugadorId,
+                valorDescartado = cartaDesplazada.valor
+            )
+        } else {
+            updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+            updates["cadenaDescarte"] = mapOf<String, Any>()
+        }
+
+        limpiarAdelantadoPendienteSiPerteneceA(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId
+        )
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
+    fun tomarCartaComoNuevaDeJuego(
+        salaId: String,
+        jugadorId: String,
+        sala: Sala,
+        cartaEnMano: Carta,
+        onError: (String) -> Unit = {}
+    ) {
+        val jugador = sala.jugadores[jugadorId] ?: run {
+            onError("Jugador no encontrado")
+            return
+        }
+
+        val mesa = jugador.cartas.mesaNormalizadaACuatroCasillas()
+
+        val jugadorSinCartas = mesa.all { it.esSlotVacio() }
+
+        if (!jugadorSinCartas) {
+            onError("Esta acción solo aplica cuando el jugador no tiene cartas")
+            return
+        }
+
+        val posicionDestino = primeraCasillaVaciaOrdenVisual(mesa) ?: run {
+            onError("No hay espacio disponible para tomar la carta")
+            return
+        }
+
+        mesa[posicionDestino] = cartaEnMano
+            .limpiarMetaDescarteRobo()
+            .copy(abierta = false)
+
+        val updates = mutableMapOf<String, Any?>()
+
+        updates["jugadores/$jugadorId/cartas"] = mesa
+        updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>()
+        updates["jugadaActual"] = mapOf<String, Any>()
+
+        // No es descarte, no activa poder y no encadena.
+        // Solo coloca la carta en el juego y termina el turno.
         updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+
+        // Si había una cadena esperando a este jugador y decidió robar/tomar,
+        // esa cadena se rompe.
+        updates["cadenaDescarte"] = mapOf<String, Any>()
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -238,7 +353,7 @@ object GameActions {
             )
         )
 
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
         updates["mazoDescarte"] = descarte
         updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>()
 
@@ -294,12 +409,24 @@ object GameActions {
             )
         )
 
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
         updates["jugadores/$jugadorId/cartas"] = cartasActuales
         updates["mazoDescarte"] = descarte
         updates["cartaPoderActiva"] = mapOf<String, Any>()
         updates["jugadaActual"] = mapOf<String, Any>()
-        updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+
+        aplicarAvancePorDescarteEncadenado(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            valorDescartado = cartaDescartada.valor
+        )
+
+        limpiarAdelantadoPendienteSiPerteneceA(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId
+        )
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -326,7 +453,7 @@ object GameActions {
             )
         )
 
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
         updates["mazoDescarte"] = descarte
         updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>()
         updates["cartaPoderActiva"] = mapOf(
@@ -345,9 +472,10 @@ object GameActions {
         jugadorId: String,
         cartaId: String
     ) {
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
 
         updates["cartaPoderActiva/cartaEspiandoId"] = cartaId
+        updates["adelantadoPendiente"] = mapOf<String, Any>()
         updates["jugadaActual"] = mapOf(
             "jugadorId" to jugadorId,
             "tipo" to "ESPIAR",
@@ -363,7 +491,7 @@ object GameActions {
         jugadorId: String,
         cartaId: String
     ) {
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
 
         updates["cartaPoderActiva/cartaEspiandoId"] = cartaId
         updates["jugadaActual"] = mapOf(
@@ -382,10 +510,75 @@ object GameActions {
         jugadorId: String,
         sala: Sala
     ) {
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
         updates["cartaPoderActiva"] = mapOf<String, Any>()
         updates["jugadaActual"] = mapOf<String, Any>()
-        updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+
+        aplicarAvancePorCimaActualDelDescarte(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId
+        )
+
+        limpiarAdelantadoPendienteSiPerteneceA(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId
+        )
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
+    fun descartarCartaEspiadaPropia(
+        salaId: String,
+        jugadorId: String,
+        sala: Sala,
+        cartaEspiada: Carta,
+        onError: (String) -> Unit = {}
+    ) {
+        val jugador = sala.jugadores[jugadorId] ?: run {
+            onError("Jugador no encontrado")
+            return
+        }
+
+        val cartasJugador = jugador.cartas.mesaNormalizadaACuatroCasillas()
+        val posicionEspiada = cartasJugador.indexOfFirst { it.id == cartaEspiada.id }
+
+        if (posicionEspiada < 0) {
+            onError("Carta espiada no encontrada en tu juego")
+            return
+        }
+
+        val cartaADescartar = cartasJugador[posicionEspiada]
+
+        if (cartaADescartar.esSlotVacio()) {
+            onError("La carta espiada ya no está disponible")
+            return
+        }
+
+        cartasJugador[posicionEspiada] = MesaSlots.VACIA
+
+        val descarte = sala.mazoDescarte.toMutableList()
+        descarte.add(
+            cartaADescartar.copy(
+                descartadaPorJugadorId = jugadorId,
+                descartadaDesdeJuegoMesa = true,
+                comodinRobadoDelDescarteValido = false
+            )
+        )
+
+        val updates = mutableMapOf<String, Any?>()
+        updates["jugadores/$jugadorId/cartas"] = cartasJugador
+        updates["mazoDescarte"] = descarte
+        updates["cartaPoderActiva"] = mapOf<String, Any>()
+        updates["jugadaActual"] = mapOf<String, Any>()
+
+        aplicarAvancePorDescarteEncadenado(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            valorDescartado = cartaADescartar.valor
+        )
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -396,11 +589,22 @@ object GameActions {
         salaId: String,
         jugadorId: String,
         sala: Sala,
-        cartaEspiada: Carta,           // la carta que estaba espiando
-        propietarioEspiadoId: String,  // dueño de la carta espiada
-        posicionCartaPropia: Int,       // carta propia que le dará al espiado
+        cartaEspiada: Carta,
+        propietarioEspiadoId: String,
+        posicionCartaPropia: Int,
         onError: (String) -> Unit = {}
     ) {
+        if (propietarioEspiadoId == jugadorId) {
+            descartarCartaEspiadaPropia(
+                salaId = salaId,
+                jugadorId = jugadorId,
+                sala = sala,
+                cartaEspiada = cartaEspiada,
+                onError = onError
+            )
+            return
+        }
+
         val jugador = sala.jugadores[jugadorId] ?: run { onError("Jugador no encontrado"); return }
         val espiado = sala.jugadores[propietarioEspiadoId] ?: run { onError("Espiado no encontrado"); return }
 
@@ -433,12 +637,25 @@ object GameActions {
             )
         )
 
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
         updates["jugadores/$jugadorId/cartas"] = cartasJugador
         updates["jugadores/$propietarioEspiadoId/cartas"] = cartasEspiado
         updates["mazoDescarte"] = descarte
         updates["cartaPoderActiva"] = mapOf<String, Any>()
-        updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+        updates["jugadaActual"] = mapOf<String, Any>()
+
+        aplicarAvancePorDescarteEncadenado(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            valorDescartado = cartaEspiada.valor
+        )
+
+        limpiarAdelantadoPendienteSiPerteneceA(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId
+        )
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -465,7 +682,7 @@ object GameActions {
             )
         )
 
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
         updates["mazoDescarte"] = descarte
         updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>()
         updates["cartaPoderActiva"] = mapOf(
@@ -508,7 +725,12 @@ object GameActions {
 
         updates["cartaPoderActiva"] = mapOf<String, Any>()
         updates["jugadaActual"] = mapOf<String, Any>()
-        updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+
+        aplicarAvancePorCimaActualDelDescarte(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId
+        )
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -535,7 +757,7 @@ object GameActions {
             )
         )
 
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
         updates["mazoDescarte"] = descarte
         updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>()
         updates["cartaPoderActiva"] = mapOf(
@@ -576,7 +798,12 @@ object GameActions {
 
         updates["cartaPoderActiva"] = mapOf<String, Any>()
         updates["jugadaActual"] = mapOf<String, Any>()
-        updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+
+        aplicarAvancePorCimaActualDelDescarte(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId
+        )
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -617,9 +844,25 @@ object GameActions {
         paloElegido: String,
         onError: (String) -> Unit = {}
     ) {
+        val valorFinal = valorElegido.uppercase()
+
+        val paloFinal = when {
+            valorFinal == "JKR" -> {
+                "comodin"
+            }
+
+            paloElegido.isNotBlank() -> {
+                paloElegido
+            }
+
+            else -> {
+                "corazones"
+            }
+        }
+
         val cartaTransformada = comodin.copy(
-            valor = valorElegido,
-            palo = paloElegido,
+            valor = valorFinal,
+            palo = paloFinal,
             descartadaPorJugadorId = jugadorId,
             descartadaDesdeJuegoMesa = false,
             comodinRobadoDelDescarteValido = false
@@ -628,10 +871,22 @@ object GameActions {
         val descarte = sala.mazoDescarte.toMutableList()
         descarte.add(cartaTransformada)
 
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
         updates["mazoDescarte"] = descarte
         updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>()
-        updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+
+        aplicarAvancePorDescarteEncadenado(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            valorDescartado = cartaTransformada.valor
+        )
+
+        limpiarAdelantadoPendienteSiPerteneceA(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId
+        )
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -652,6 +907,8 @@ object GameActions {
         posicionCarta: Int,
         onError: (String) -> Unit = {}
     ) {
+        if (!jugadorPuedeActuar(sala, jugadorId, onError)) return
+
         val jugador = sala.jugadores[jugadorId] ?: run {
             onError("Jugador no encontrado")
             return
@@ -689,9 +946,37 @@ object GameActions {
             )
         )
 
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
         updates["jugadores/$jugadorId/cartas"] = cartasActualizadas
         updates["mazoDescarte"] = descarte
+
+        val adelantadoDetectado = detectarAdelantadoDuranteEspiaPendiente(
+            sala = sala,
+            jugadorQueDescartaId = jugadorId,
+            cartaDescartada = cartaADescartar,
+            posicionDescartada = posicionCarta
+        )
+
+        if (adelantadoDetectado != null) {
+            updates["adelantadoPendiente"] = adelantadoDetectado
+            updates["jugadaActual"] = mapOf(
+                "jugadorId" to adelantadoDetectado.jugadorPerjudicadoId,
+                "tipo" to "ADELANTADO_ESPIA",
+                "subaccion" to "Puede robar descarte",
+                "timestamp" to System.currentTimeMillis()
+            )
+
+            // Importante:
+            // El adelantado se permite, pero NO consume turno
+            // ni resuelve cadena de descarte.
+        } else {
+            aplicarDescarteEspontaneoConPoliticaDeCadena(
+                updates = updates,
+                sala = sala,
+                jugadorId = jugadorId,
+                valorDescartado = cartaADescartar.valor
+            )
+        }
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -713,24 +998,56 @@ object GameActions {
             return
         }
 
+        if (jugador.descalificado) {
+            onError("El jugador ya está descalificado")
+            return
+        }
+
         val mesa = jugador.cartas.mesaNormalizadaACuatroCasillas()
-        val hueco = primeraCasillaVaciaOrdenVisual(mesa) ?: run {
-            onError("No hay casilla libre para la carta de castigo")
-            return
+        val hueco = primeraCasillaVaciaOrdenVisual(mesa)
+
+        val updates = mutableMapOf<String, Any?>()
+
+        if (hueco != null) {
+            val pozo = sala.mazoRobar.toMutableList()
+
+            if (pozo.isEmpty()) {
+                onError("El pozo de robo está vacío")
+                return
+            }
+
+            val castigo = pozo
+                .removeAt(0)
+                .limpiarMetaDescarteRobo()
+                .copy(abierta = false)
+
+            mesa[hueco] = castigo
+
+            // Si el castigo sí pudo aplicarse en un slot vacío,
+            // NO se suma error.
+            updates["mazoRobar"] = pozo
+            updates["jugadores/$jugadorId/cartas"] = mesa
+        } else {
+            // No hay espacio dentro de las 4 cartas principales.
+            // No se roba carta. Ahora sí cuenta como error.
+            val nuevosErrores = (jugador.erroresDescarte + 1).coerceAtMost(3)
+            val quedaDescalificado = nuevosErrores >= 3
+
+            updates["jugadores/$jugadorId/erroresDescarte"] = nuevosErrores
+            updates["jugadores/$jugadorId/descalificado"] = quedaDescalificado
+
+            if (quedaDescalificado && sala.turnoActualId == jugadorId) {
+                updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+            }
+
+            onError(
+                if (quedaDescalificado) {
+                    "Tercer error: jugador descalificado"
+                } else {
+                    "Error registrado: $nuevosErrores de 3"
+                }
+            )
         }
-
-        val pozo = sala.mazoRobar.toMutableList()
-        if (pozo.isEmpty()) {
-            onError("El pozo de robo está vacío")
-            return
-        }
-
-        val castigo = pozo.removeAt(0).limpiarMetaDescarteRobo().copy(abierta = false)
-        mesa[hueco] = castigo
-
-        val updates = mutableMapOf<String, Any>()
-        updates["mazoRobar"] = pozo
-        updates["jugadores/$jugadorId/cartas"] = mesa
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -747,10 +1064,19 @@ object GameActions {
         jugadorId: String,
         sala: Sala
     ) {
-        val updates = mutableMapOf<String, Any>()
+        val jugador = sala.jugadores[jugadorId] ?: return
+        if (jugador.descalificado) return
+
+        val updates = mutableMapOf<String, Any?>()
         updates["brataActivada"] = true
         updates["brataJugadorId"] = jugadorId
         updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+
+        romperCadenaSiJugadorEsperado(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId
+        )
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -788,10 +1114,105 @@ object GameActions {
         }
         cartasAdelantado[hueco] = cartaADescartar
 
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
         updates["jugadores/$jugadorId/cartas"] = cartasJugador
         updates["jugadores/$adelantadoId/cartas"] = cartasAdelantado
         updates["cartaPoderActiva"] = mapOf<String, Any>() // limpiar poder activo
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
+    fun resolverRobarDescartePorAdelantado(
+        salaId: String,
+        jugadorId: String,
+        sala: Sala,
+        posicionCartaPropia: Int,
+        onError: (String) -> Unit = {}
+    ) {
+        val adelanto = sala.adelantadoPendiente ?: run {
+            onError("No hay adelantado pendiente")
+            return
+        }
+
+        if (!adelanto.activo || adelanto.jugadorPerjudicadoId != jugadorId) {
+            onError("No puedes aplicar esta acción")
+            return
+        }
+
+        val jugadorPerjudicado = sala.jugadores[jugadorId] ?: run {
+            onError("Jugador no encontrado")
+            return
+        }
+
+        val jugadorAdelantado = sala.jugadores[adelanto.jugadorAdelantadoId] ?: run {
+            onError("Jugador adelantado no encontrado")
+            return
+        }
+
+        if (posicionCartaPropia !in 0..3) {
+            onError("Posición inválida")
+            return
+        }
+
+        if (adelanto.posicionAdelantada !in 0..3) {
+            onError("Posición del adelantado inválida")
+            return
+        }
+
+        val cartasPerjudicado = jugadorPerjudicado.cartas.mesaNormalizadaACuatroCasillas()
+        val cartaParaEntregar = cartasPerjudicado[posicionCartaPropia]
+
+        if (cartaParaEntregar.esSlotVacio()) {
+            onError("No puedes entregar una casilla vacía")
+            return
+        }
+
+        val cartasAdelantado = jugadorAdelantado.cartas.mesaNormalizadaACuatroCasillas()
+
+        // El espacio del adelantado debería estar vacío porque de ahí salió la carta descartada.
+        // Si por alguna razón no está vacío, evitamos pisar una carta existente.
+        if (!cartasAdelantado[adelanto.posicionAdelantada].esSlotVacio()) {
+            onError("El espacio del adelantado ya no está vacío")
+            return
+        }
+
+        cartasPerjudicado[posicionCartaPropia] = MesaSlots.VACIA
+        cartasAdelantado[adelanto.posicionAdelantada] = cartaParaEntregar.copy(abierta = false)
+
+        val descarte = sala.mazoDescarte.toMutableList()
+
+        // Si la carta espía todavía estaba en mano, se manda ahora al descarte.
+        if (!adelanto.espiaYaEnDescarte) {
+            val cartaEspia = jugadorPerjudicado.cartaEnMano ?: run {
+                onError("La carta espía ya no está en mano")
+                return
+            }
+
+            if (cartaEspia.id != adelanto.cartaEspiaPendienteId) {
+                onError("La carta espía pendiente no coincide")
+                return
+            }
+
+            descarte.add(
+                cartaEspia.copy(
+                    descartadaPorJugadorId = jugadorId,
+                    descartadaDesdeJuegoMesa = false,
+                    comodinRobadoDelDescarteValido = false
+                )
+            )
+        }
+
+        val updates = mutableMapOf<String, Any?>()
+
+        updates["jugadores/$jugadorId/cartas"] = cartasPerjudicado
+        updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>()
+        updates["jugadores/${adelanto.jugadorAdelantadoId}/cartas"] = cartasAdelantado
+
+        updates["mazoDescarte"] = descarte
+        updates["cartaPoderActiva"] = mapOf<String, Any>()
+        updates["adelantadoPendiente"] = mapOf<String, Any>()
+        updates["jugadaActual"] = mapOf<String, Any>()
+        updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -824,7 +1245,7 @@ object GameActions {
         // El resto se mezcla y pasa al pozo
         val nuevoPozoMezclado = descarte.map { it.limpiarMetaDescarteRobo() }.shuffled()
 
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
         updates["mazoRobar"] = nuevoPozoMezclado
         updates["mazoDescarte"] = listOf(cartaSuperior)
 
@@ -835,13 +1256,317 @@ object GameActions {
     // HELPERS PRIVADOS
     // ─────────────────────────────────────────
 
+    private fun esValorCartaEspia(valor: String): Boolean {
+        return valor in listOf("5", "6", "7", "8", "9", "10")
+    }
+
+    private fun detectarAdelantadoDuranteEspiaPendiente(
+        sala: Sala,
+        jugadorQueDescartaId: String,
+        cartaDescartada: Carta,
+        posicionDescartada: Int
+    ): AdelantadoPendiente? {
+        val jugadorPerjudicadoId = sala.turnoActualId
+
+        if (jugadorPerjudicadoId.isBlank()) return null
+        if (jugadorPerjudicadoId == jugadorQueDescartaId) return null
+        if (sala.adelantadoPendiente?.activo == true) return null
+
+        val jugadorPerjudicado = sala.jugadores[jugadorPerjudicadoId] ?: return null
+
+        // Caso A:
+        // El jugador en turno todavía tiene la carta espía en mano.
+        val cartaEnMano = jugadorPerjudicado.cartaEnMano
+        if (cartaEnMano != null && esValorCartaEspia(cartaEnMano.valor)) {
+            return AdelantadoPendiente(
+                activo = true,
+                jugadorPerjudicadoId = jugadorPerjudicadoId,
+                jugadorAdelantadoId = jugadorQueDescartaId,
+                cartaAdelantadaId = cartaDescartada.id,
+                valorAdelantado = cartaDescartada.valor,
+                paloAdelantado = cartaDescartada.palo,
+                posicionAdelantada = posicionDescartada,
+                cartaEspiaPendienteId = cartaEnMano.id,
+                valorCartaEspia = cartaEnMano.valor,
+                paloCartaEspia = cartaEnMano.palo,
+                espiaYaEnDescarte = false
+            )
+        }
+
+        // Caso B:
+        // El jugador ya activó ESPIAR, la carta espía ya está en descarte,
+        // pero todavía no eligió carta para espiar.
+        val poder = sala.cartaPoderActiva
+        val espiaActivaSinCartaSeleccionada =
+            poder != null &&
+                    poder.jugadorId == jugadorPerjudicadoId &&
+                    poder.tipoPoder == TipoPoder.ESPIAR &&
+                    poder.cartaEspiandoId.isBlank()
+
+        if (espiaActivaSinCartaSeleccionada) {
+            return AdelantadoPendiente(
+                activo = true,
+                jugadorPerjudicadoId = jugadorPerjudicadoId,
+                jugadorAdelantadoId = jugadorQueDescartaId,
+                cartaAdelantadaId = cartaDescartada.id,
+                valorAdelantado = cartaDescartada.valor,
+                paloAdelantado = cartaDescartada.palo,
+                posicionAdelantada = posicionDescartada,
+                cartaEspiaPendienteId = "",
+                valorCartaEspia = poder.valorCartaActivadora,
+                paloCartaEspia = "",
+                espiaYaEnDescarte = true
+            )
+        }
+
+        return null
+    }
+
+    private fun limpiarAdelantadoPendienteSiPerteneceA(
+        updates: MutableMap<String, Any?>,
+        sala: Sala,
+        jugadorId: String
+    ) {
+        val adelanto = sala.adelantadoPendiente
+
+        if (
+            adelanto != null &&
+            adelanto.activo &&
+            adelanto.jugadorPerjudicadoId == jugadorId
+        ) {
+            updates["adelantadoPendiente"] = mapOf<String, Any>()
+        }
+    }
+
+    private data class ResultadoCadena(
+        val siguienteTurnoId: String,
+        val cadenaActualizada: CadenaDescarte?
+    )
+
+    private fun aplicarDescarteEspontaneoConPoliticaDeCadena(
+        updates: MutableMap<String, Any?>,
+        sala: Sala,
+        jugadorId: String,
+        valorDescartado: String
+    ) {
+        val cadenaActual = sala.cadenaDescarte
+            ?.takeIf { it.activa && it.valorBase == valorDescartado }
+
+        val esJugadorEnTurno = sala.turnoActualId == jugadorId
+        val esJugadorEsperado = cadenaActual?.turnoEsperadoId == jugadorId
+
+        // Caso 1:
+        // No existe cadena activa.
+        // Si descarta el jugador en turno, inicia cadena.
+        // Si descarta alguien fuera de turno, se permite el descarte,
+        // pero NO cambia el turno.
+        if (cadenaActual == null) {
+            if (esJugadorEnTurno) {
+                aplicarAvancePorDescarteEncadenado(
+                    updates = updates,
+                    sala = sala,
+                    jugadorId = jugadorId,
+                    valorDescartado = valorDescartado
+                )
+            }
+
+            return
+        }
+
+        // Caso 2:
+        // Hay cadena activa del mismo valor.
+        // Registramos que este jugador ya descartó,
+        // aunque se haya adelantado.
+        val cadenaConJugadorRegistrado = cadenaActual.copy(
+            jugadoresQueDescartaron = cadenaActual.jugadoresQueDescartaron +
+                    (jugadorId to true)
+        )
+
+        // Caso 3:
+        // Si quien descartó era el jugador esperado,
+        // ahora sí se consumen todos los turnos que ya estén
+        // registrados en orden natural.
+        if (esJugadorEsperado || esJugadorEnTurno) {
+            val resultado = resolverAvanceCadenaDesde(
+                sala = sala,
+                cadena = cadenaConJugadorRegistrado,
+                jugadorDesdeId = cadenaConJugadorRegistrado.turnoEsperadoId
+            )
+
+            updates["turnoActualId"] = resultado.siguienteTurnoId
+
+            if (resultado.cadenaActualizada == null) {
+                updates["cadenaDescarte"] = mapOf<String, Any>()
+            } else {
+                updates["cadenaDescarte"] = resultado.cadenaActualizada
+            }
+
+            return
+        }
+
+        // Caso 4:
+        // Jugador fuera de turno se adelantó correctamente.
+        // Su descarte queda registrado, pero el turno NO cambia.
+        updates["cadenaDescarte"] = cadenaConJugadorRegistrado
+    }
+
+    private fun aplicarAvancePorDescarteEncadenado(
+        updates: MutableMap<String, Any?>,
+        sala: Sala,
+        jugadorId: String,
+        valorDescartado: String
+    ) {
+        val resultado = calcularAvancePorDescarteEncadenado(
+            sala = sala,
+            jugadorId = jugadorId,
+            valorDescartado = valorDescartado
+        )
+
+        updates["turnoActualId"] = resultado.siguienteTurnoId
+
+        if (resultado.cadenaActualizada == null) {
+            updates["cadenaDescarte"] = mapOf<String, Any>()
+        } else {
+            updates["cadenaDescarte"] = resultado.cadenaActualizada
+        }
+    }
+
+    private fun calcularAvancePorDescarteEncadenado(
+        sala: Sala,
+        jugadorId: String,
+        valorDescartado: String
+    ): ResultadoCadena {
+        val cadenaExistente = sala.cadenaDescarte
+            ?.takeIf { it.activa && it.valorBase == valorDescartado }
+
+        val jugadoresQueDescartaron =
+            (cadenaExistente?.jugadoresQueDescartaron ?: emptyMap()) +
+                    (jugadorId to true)
+
+        val cadenaBase = if (cadenaExistente != null) {
+            cadenaExistente.copy(
+                jugadoresQueDescartaron = jugadoresQueDescartaron
+            )
+        } else {
+            val siguiente = siguienteTurno(jugadorId, sala)
+
+            CadenaDescarte(
+                activa = true,
+                valorBase = valorDescartado,
+                jugadorOrigenId = jugadorId,
+                turnoEsperadoId = siguiente,
+                jugadoresQueDescartaron = jugadoresQueDescartaron
+            )
+        }
+
+        val jugadorDesde = cadenaBase.turnoEsperadoId.ifBlank {
+            siguienteTurno(jugadorId, sala)
+        }
+
+        return resolverAvanceCadenaDesde(
+            sala = sala,
+            cadena = cadenaBase,
+            jugadorDesdeId = jugadorDesde
+        )
+    }
+
+    private fun resolverAvanceCadenaDesde(
+        sala: Sala,
+        cadena: CadenaDescarte,
+        jugadorDesdeId: String
+    ): ResultadoCadena {
+        var jugadorEvaluadoId = jugadorDesdeId
+        val totalJugadores = sala.jugadores.size.coerceAtLeast(1)
+        var saltos = 0
+
+        while (saltos < totalJugadores) {
+            val yaDescarto =
+                cadena.jugadoresQueDescartaron[jugadorEvaluadoId] == true
+
+            if (!yaDescarto) {
+                return ResultadoCadena(
+                    siguienteTurnoId = jugadorEvaluadoId,
+                    cadenaActualizada = cadena.copy(
+                        turnoEsperadoId = jugadorEvaluadoId
+                    )
+                )
+            }
+
+            jugadorEvaluadoId = siguienteTurno(jugadorEvaluadoId, sala)
+            saltos++
+        }
+
+        // Todos los jugadores del ciclo ya descartaron ese valor.
+        // La cadena termina y el turno continúa con el siguiente calculado.
+        return ResultadoCadena(
+            siguienteTurnoId = jugadorEvaluadoId,
+            cadenaActualizada = null
+        )
+    }
+
+    private fun romperCadenaSiJugadorEsperado(
+        updates: MutableMap<String, Any?>,
+        sala: Sala,
+        jugadorId: String
+    ) {
+        val cadena = sala.cadenaDescarte
+
+        if (
+            cadena != null &&
+            cadena.activa &&
+            cadena.turnoEsperadoId == jugadorId
+        ) {
+            updates["cadenaDescarte"] = mapOf<String, Any>()
+        }
+    }
+
+    private fun aplicarAvancePorCimaActualDelDescarte(
+        updates: MutableMap<String, Any?>,
+        sala: Sala,
+        jugadorId: String
+    ) {
+        val cima = sala.mazoDescarte.lastOrNull()
+
+        if (cima != null) {
+            aplicarAvancePorDescarteEncadenado(
+                updates = updates,
+                sala = sala,
+                jugadorId = jugadorId,
+                valorDescartado = cima.valor
+            )
+        } else {
+            updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+            updates["cadenaDescarte"] = mapOf<String, Any>()
+        }
+    }
+
     // Calcula el ID del siguiente jugador en sentido horario
     private fun siguienteTurno(jugadorActualId: String, sala: Sala): String {
         val jugadores = sala.jugadores.keys.toList()
         if (jugadores.isEmpty()) return ""
+
         val indexActual = jugadores.indexOf(jugadorActualId)
-        val indexSiguiente = (indexActual + 1) % jugadores.size
-        return jugadores[indexSiguiente]
+        if (indexActual < 0) {
+            return jugadores.firstOrNull { id ->
+                sala.jugadores[id]?.descalificado != true
+            } ?: jugadores.first()
+        }
+
+        var offset = 1
+
+        while (offset <= jugadores.size) {
+            val indexSiguiente = (indexActual + offset) % jugadores.size
+            val candidatoId = jugadores[indexSiguiente]
+            val candidato = sala.jugadores[candidatoId]
+
+            if (candidato?.descalificado != true) {
+                return candidatoId
+            }
+
+            offset++
+        }
+
+        return jugadorActualId
     }
 
     // Construye el mapa de actualizaciones para un intercambio de dos cartas
@@ -853,7 +1578,7 @@ object GameActions {
         jugadorBId: String,
         cartaBId: String,
         onError: (String) -> Unit = {}
-    ): MutableMap<String, Any>? {
+    ): MutableMap<String, Any?>? {
         val cartaA = resolverCartaEnMesaPorId(
             sala = sala,
             propietarioId = jugadorAId,
@@ -877,7 +1602,7 @@ object GameActions {
             return null
         }
 
-        val updates = mutableMapOf<String, Any>()
+        val updates = mutableMapOf<String, Any?>()
 
         if (jugadorAId == jugadorBId) {
             val cartas = sala.jugadores[jugadorAId]
@@ -888,8 +1613,9 @@ object GameActions {
                     return null
                 }
 
-            cartas[cartaA.posicion] = cartaB.carta
-            cartas[cartaB.posicion] = cartaA.carta
+            val cartaTemporal = cartas[cartaA.posicion]
+            cartas[cartaA.posicion] = cartas[cartaB.posicion]
+            cartas[cartaB.posicion] = cartaTemporal
 
             updates["jugadores/$jugadorAId/cartas"] = cartas
         } else {
@@ -999,9 +1725,26 @@ object GameActions {
         updates["jugadores/$jugadorId/cartas"] = cartasActuales
         updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>()
         updates["mazoDescarte"] = descarte
-        updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
         updates["cambioPropioAnimando"] = null
         updates["jugadaActual"] = mapOf<String, Any>()
+
+        if (!cartaDesplazada.esSlotVacio()) {
+            aplicarAvancePorDescarteEncadenado(
+                updates = updates,
+                sala = sala,
+                jugadorId = jugadorId,
+                valorDescartado = cartaDesplazada.valor
+            )
+        } else {
+            updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+            updates["cadenaDescarte"] = mapOf<String, Any>()
+        }
+
+        limpiarAdelantadoPendienteSiPerteneceA(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId
+        )
 
         salasRef.child(salaId).updateChildren(updates)
     }

@@ -10,6 +10,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -24,11 +26,14 @@ import com.aguado.bratagame.ui.components.CartaVisual
 import com.aguado.bratagame.ui.components.mappingPalo
 import com.aguado.bratagame.ui.theme.CasinoGold
 import com.aguado.bratagame.ui.theme.DarkCasinoGreen
+import androidx.compose.foundation.Image
+import com.aguado.bratagame.R
 
 @Composable
 fun ResultScreen(
     sala: Sala,
     jugadorLocalId: String,
+    esAnfitrion: Boolean,
     onRevancha: () -> Unit,
     onIrAlLobby: () -> Unit,
     onIrAlInicio: () -> Unit
@@ -42,10 +47,7 @@ fun ResultScreen(
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
 
-            EncabezadoResultado(
-                resultado = resultado,
-                jugadorLocalId = jugadorLocalId
-            )
+            ImagenEncabezadoResultado()
 
             LazyColumn(
                 modifier = Modifier
@@ -63,6 +65,7 @@ fun ResultScreen(
             }
 
             BotonesResultado(
+                esAnfitrion = esAnfitrion,
                 onRevancha = onRevancha,
                 onIrAlLobby = onIrAlLobby,
                 onIrAlInicio = onIrAlInicio
@@ -76,54 +79,22 @@ fun ResultScreen(
 // ─────────────────────────────────────────────
 
 @Composable
-private fun EncabezadoResultado(
-    resultado: HandEvaluator.ResultadoRonda,
-    jugadorLocalId: String
-) {
-    val (titulo, subtitulo, colorFondo) = when {
-        resultado.hayEmpate -> {
-            val nombres = resultado.empatados.joinToString(" y ") { it.jugador.nombre }
-            Triple(
-                "¡EMPATE!",
-                "$nombres · ${resultado.empatados.first().puntuacion} pts",
-                Color(0xFF1565C0)
-            )
-        }
-        resultado.ganador.jugador.id == jugadorLocalId -> Triple(
-            "🏆 ¡GANASTE!",
-            "${resultado.ganador.jugador.nombre} · ${resultado.ganador.puntuacion} pts",
-            Color(0xFF1B5E20)
-        )
-        else -> Triple(
-            "Ganó ${resultado.ganador.jugador.nombre}",
-            "${resultado.ganador.puntuacion} pts",
-            Color(0xFF4A0000)
-        )
-    }
-
+private fun ImagenEncabezadoResultado() {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(colorFondo)
-            .padding(vertical = 20.dp, horizontal = 16.dp),
+            .height(140.dp)
+            .background(Color(0xFF102A10)),
         contentAlignment = Alignment.Center
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                text = titulo,
-                color = CasinoGold,
-                fontSize = 28.sp,
-                fontWeight = FontWeight.ExtraBold,
-                textAlign = TextAlign.Center
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = subtitulo,
-                color = Color.White,
-                fontSize = 14.sp,
-                textAlign = TextAlign.Center
-            )
-        }
+        Image(
+            painter = painterResource(id = R.drawable.result_header),
+            contentDescription = "Resultado",
+            modifier = Modifier
+                .fillMaxWidth(1f)
+                .height(140.dp),
+            contentScale = ContentScale.Fit
+        )
     }
 }
 
@@ -142,8 +113,9 @@ private fun FilaJugadorResultado(
     val jugador = resultadoJugador.jugador
 
     val colorCard = when {
+        jugador.descalificado -> Color(0xFF4A0000)
         resultadoJugador.esGanador -> Color(0xFF1B5E20)
-        esLocal -> Color(0xFF1A1A2E)
+        esLocal -> Color(0xFF263238)
         else -> Color(0xFF1A1A1A)
     }
     val colorBorde = when {
@@ -253,10 +225,19 @@ private fun FilaJugadorResultado(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "${resultadoJugador.puntuacion} pts",
-                    color = if (resultadoJugador.esGanador) CasinoGold else Color.White,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.ExtraBold
+                    text = if (jugador.descalificado) {
+                        "DESCALIFICADO"
+                    } else {
+                        "${resultadoJugador.puntuacion} pts"
+                    },
+                    color = if (jugador.descalificado) {
+                        Color(0xFFFFCDD2)
+                    } else {
+                        CasinoGold
+                    },
+                    fontSize = if (jugador.descalificado) 12.sp else 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
                 )
             }
         }
@@ -269,6 +250,7 @@ private fun FilaJugadorResultado(
 
 @Composable
 private fun BotonesResultado(
+    esAnfitrion: Boolean,
     onRevancha: () -> Unit,
     onIrAlLobby: () -> Unit,
     onIrAlInicio: () -> Unit
@@ -280,18 +262,27 @@ private fun BotonesResultado(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Button(
-            onClick = onRevancha,
-            modifier = Modifier.fillMaxWidth().height(50.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = CasinoGold),
-            shape = RoundedCornerShape(10.dp)
-        ) {
-            Text(
-                "⚔ REVANCHA",
-                color = Color.Black,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.ExtraBold
-            )
+        if (esAnfitrion) {
+            Button(
+                onClick = onRevancha,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(54.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF456B03),
+                    contentColor = Color.White
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(
+                    text = "⚔ REVANCHA",
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
         }
 
         Row(
@@ -354,6 +345,7 @@ fun ResultScreenPreview() {
             turnoActualId = "1"
         ),
         jugadorLocalId = "1",
+        esAnfitrion = true,
         onRevancha = {},
         onIrAlLobby = {},
         onIrAlInicio = {}
@@ -391,6 +383,7 @@ fun ResultScreenGanasPreview() {
             turnoActualId = "1"
         ),
         jugadorLocalId = "1",
+        esAnfitrion = true,
         onRevancha = {},
         onIrAlLobby = {},
         onIrAlInicio = {}
@@ -428,6 +421,7 @@ fun ResultScreenEmpatePreview() {
             turnoActualId = "1"
         ),
         jugadorLocalId = "1",
+        esAnfitrion = true,
         onRevancha = {},
         onIrAlLobby = {},
         onIrAlInicio = {}

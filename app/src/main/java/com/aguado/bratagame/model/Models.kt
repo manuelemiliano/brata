@@ -99,7 +99,20 @@ data class Jugador(
     var estaListo: Boolean = false,
     var esAnfitrion: Boolean = false,
     var cartas: List<Carta> = emptyList(),
-    var cartaEnMano: Carta? = null
+    var cartaEnMano: Carta? = null,
+
+    // Presencia real del jugador.
+    // Sirve para saber si el jugador está conectado actualmente
+    // sin eliminarlo de la partida cuando cierra la app por error.
+    var conectado: Boolean = true,
+    var ultimaConexion: Long = 0L,
+
+    // Errores por intento incorrecto de descarte cuando ya no hay
+    // espacio disponible para recibir carta de castigo.
+    var erroresDescarte: Int = 0,
+
+    // Al llegar a 3 errores, el jugador queda fuera de la ronda.
+    var descalificado: Boolean = false
 )
 
 // ─────────────────────────────────────────────
@@ -162,9 +175,29 @@ data class Sala(
 
 // Animación de cambio por carta propia hacia el descarte
 // Escrita por el jugador ejecutor; leída por todos los dispositivos.
-    var cambioPropioAnimando: CambioPropioAnimando? = null
+    var cambioPropioAnimando: CambioPropioAnimando? = null,
+
+    var cadenaDescarte: CadenaDescarte? = null,
+
+    var adelantadoPendiente: AdelantadoPendiente? = null
 )
 
+data class CadenaDescarte(
+    val activa: Boolean = false,
+
+    // Valor que se está encadenando: "K", "7", "A", etc.
+    val valorBase: String = "",
+
+    // Jugador que inició la cadena al colocar la carta en el descarte.
+    val jugadorOrigenId: String = "",
+
+    // Jugador cuyo turno debe responder la cadena.
+    val turnoEsperadoId: String = "",
+
+    // Jugadores que ya descartaron este valor durante la cadena,
+    // aunque se hayan adelantado.
+    val jugadoresQueDescartaron: Map<String, Boolean> = emptyMap()
+)
 
 // ─────────────────────────────────────────────
 // PODER ACTIVO EN EL DESCARTE
@@ -184,6 +217,31 @@ data class JugadaActual(
     val tipo: String = "",
     val subaccion: String = "",
     val timestamp: Long = 0L
+)
+
+data class AdelantadoPendiente(
+    val activo: Boolean = false,
+
+    // Jugador que tenía la carta espía pendiente.
+    val jugadorPerjudicadoId: String = "",
+
+    // Jugador que se adelantó descartando.
+    val jugadorAdelantadoId: String = "",
+
+    // Carta que el adelantado descartó.
+    val cartaAdelantadaId: String = "",
+    val valorAdelantado: String = "",
+    val paloAdelantado: String = "",
+
+    // Posición exacta que dejó vacía el adelantado.
+    val posicionAdelantada: Int = -1,
+
+    // Carta espía pendiente del jugador perjudicado.
+    // Si ya había activado ESPIAR, puede estar ya en el descarte.
+    val cartaEspiaPendienteId: String = "",
+    val valorCartaEspia: String = "",
+    val paloCartaEspia: String = "",
+    val espiaYaEnDescarte: Boolean = false
 )
 
 // ─────────────────────────────────────────────

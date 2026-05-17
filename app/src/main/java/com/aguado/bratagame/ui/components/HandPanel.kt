@@ -56,12 +56,26 @@ fun HandPanel(
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
 
+                val esModoTomar = accionesDisponibles.size == 1 &&
+                        accionesDisponibles.first() == AccionMano.TOMAR
+
                 val poder = GameRules.obtenerPoder(cartaEnMano)
-                if (poder != TipoPoder.NINGUNO) {
+
+                if (!esModoTomar && poder != TipoPoder.NINGUNO) {
                     Text(
                         text = etiquetaPoder(poder),
                         color = CasinoGold,
                         fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                }
+
+                if (esModoTomar) {
+                    Text(
+                        text = "Nueva carta de juego",
+                        color = CasinoGold,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(bottom = 4.dp)
                     )
@@ -108,6 +122,9 @@ private fun BotonAccion(accion: AccionMano, onClick: () -> Unit) {
         AccionMano.DESCARTAR_FREE -> Triple("DESCARTE FREE ✦", Color(0xFFFF8F00), Color.Black)
         AccionMano.SELECCIONAR_COMODIN -> Triple("DEFINIR COMODÍN ★", Color(0xFF6200EE), Color.White)
         AccionMano.REGRESAR -> Triple("REGRESAR", Color.DarkGray, Color.White)
+        AccionMano.TOMAR -> Triple("TOMAR", Color(0xFF456B03), Color.White)
+
+        AccionMano.ROBAR_DESCARTE -> Triple("ROBAR DESCARTE", Color(0xFF8A6D1D), Color.White)
     }
 
     Button(

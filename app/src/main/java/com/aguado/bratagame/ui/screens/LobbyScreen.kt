@@ -1,5 +1,6 @@
 package com.aguado.bratagame.ui.screens
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -11,18 +12,24 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.geometry.Offset
 import com.aguado.bratagame.FirebaseManager
 import com.aguado.bratagame.Jugador
 import com.aguado.bratagame.Sala
-import com.aguado.bratagame.ui.theme.DarkCasinoGreen
-import com.aguado.bratagame.ui.theme.CasinoGold
-import androidx.compose.foundation.Image
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
 import com.aguado.bratagame.R
+import com.aguado.bratagame.ui.theme.CasinoGold
+import com.aguado.bratagame.ui.theme.DarkCasinoGreen
 @Composable
 fun LobbyScreen(
     jugadorLocal: Jugador,
@@ -76,21 +83,21 @@ fun LobbyScreen(
         )
 
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "LOBBY: ${datosSala?.nombreSala ?: ""}",
-                    color = Color(0xFF1B5E20),
-                    style = MaterialTheme.typography.headlineMedium,
-                    modifier = Modifier.weight(1f)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(175.dp),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                BannerNombreSala(
+                    nombreSala = datosSala?.nombreSala ?: idSalaInicial,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp)
                 )
-                IconButton(onClick = onSalirAlLogin) {
-                    Icon(
-                        imageVector = Icons.Default.ExitToApp,
-                        contentDescription = "Salir",
-                        tint = Color(0xFF1B5E20)
-                    )
-                }
             }
+
+            Spacer(modifier = Modifier.height(8.dp))
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -194,24 +201,142 @@ fun LobbyScreen(
                 )
             }
 
+            Button(
+                onClick = onSalirAlLogin,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF123515),
+                    contentColor = Color.White
+                ),
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ExitToApp,
+                    contentDescription = "Salir",
+                    tint = Color.White
+                )
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Text(
+                    text = "SALIR",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
             // BOTÓN COMENZAR (Solo para el Host)
             if (yo?.esAnfitrion == true) {
                 val todosListos = datosSala?.jugadores?.values?.all { it.estaListo } ?: false
+
                 Button(
                     onClick = {
                         val jugadoresConectados = datosSala?.jugadores?.values?.toList() ?: emptyList()
                         FirebaseManager.iniciarPartida(idSalaInicial, jugadoresConectados)
-                        // iniciarPartida ya setea estaEnJuego = true internamente, no necesitas marcarJuegoIniciado
                     },
                     enabled = todosListos && (datosSala?.jugadores?.size ?: 0) >= 2,
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.White)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White,
+                        contentColor = Color.Black
+                    )
                 ) {
-                    Text("COMENZAR JUEGO", color = Color.Black)
+                    Text(
+                        text = "COMENZAR JUEGO",
+                        color = Color.Black,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }
     }
+}
+
+
+@Composable
+private fun BannerNombreSala(
+    nombreSala: String,
+    modifier: Modifier = Modifier
+) {
+    val nombreMostrado = nombreSala.ifBlank { "MESA" }
+    val fontSizeSala = tamanoFuenteSala(nombreMostrado)
+
+    Box(
+        modifier = modifier
+            .height(190.dp),
+        contentAlignment = Alignment.TopCenter
+    ) {
+        Image(
+            painter = painterResource(id = R.drawable.lobby_sala_frame),
+            contentDescription = "Marco del nombre de la sala",
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(178.dp),
+            contentScale = ContentScale.Fit
+        )
+
+        // Capa inferior para profundidad muy sutil
+        Text(
+            text = nombreMostrado,
+            modifier = Modifier
+                .fillMaxWidth(0.68f)
+                .align(Alignment.TopCenter)
+                .offset(y = 104.dp),
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            softWrap = false,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            color = Color(0xFF0E2410).copy(alpha = 0.88f),
+            fontSize = fontSizeSala,
+            fontFamily = FontFamily.Serif,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.35.sp,
+            style = TextStyle(
+                shadow = Shadow(
+                    color = Color.White.copy(alpha = 0.4f),
+                    offset = Offset(0.8f, 0.5f),
+                    blurRadius = 0.8f
+                )
+            )
+        )
+
+        // Capa principal del texto
+        Text(
+            text = nombreMostrado,
+            modifier = Modifier
+                .fillMaxWidth(0.68f)
+                .align(Alignment.TopCenter)
+                .offset(y = 103.dp),
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            softWrap = false,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            color = Color(0xFF093D14),
+            fontSize = fontSizeSala,
+            fontFamily = FontFamily.Serif,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.35.sp,
+            style = TextStyle(
+                shadow = Shadow(
+                    color = Color.White.copy(alpha = 0.28f),
+                    offset = Offset(-0.35f, -0.35f),
+                    blurRadius = 0.5f
+                )
+            )
+        )
+    }
+}
+
+private fun tamanoFuenteSala(nombreSala: String) = when {
+    nombreSala.length <= 10 -> 28.sp
+    nombreSala.length <= 16 -> 25.sp
+    nombreSala.length <= 22 -> 22.sp
+    nombreSala.length <= 28 -> 18.sp
+    else -> 15.sp
 }
 
 @androidx.compose.ui.tooling.preview.Preview(showBackground = true, backgroundColor = 0xFF0D3311)

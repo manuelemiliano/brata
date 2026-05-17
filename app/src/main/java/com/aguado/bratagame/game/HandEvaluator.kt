@@ -47,24 +47,50 @@ object HandEvaluator {
     // ─────────────────────────────────────────
 
     fun evaluarRonda(sala: Sala): ResultadoRonda {
-        val resultados = sala.jugadores.values.map { jugador ->
+        val jugadoresActivos = sala.jugadores.values
+            .filter { !it.descalificado }
+
+        val jugadoresDescalificados = sala.jugadores.values
+            .filter { it.descalificado }
+
+        val resultadosActivos = jugadoresActivos.map { jugador ->
             evaluarMano(jugador)
         }.sortedBy { it.puntuacion }
 
-        val menorPuntuacion = resultados.first().puntuacion
-        val empatados = resultados.filter { it.puntuacion == menorPuntuacion }
+        val resultadosDescalificados = jugadoresDescalificados.map { jugador ->
+            ResultadoJugador(
+                jugador = jugador,
+                puntuacion = 999,
+                reglaAplicada = ReglaEspecial.NINGUNA,
+                esGanador = false
+            )
+        }
+
+        // Si por alguna razón todos están descalificados, evitamos crash.
+        if (resultadosActivos.isEmpty()) {
+            val listaFinal = resultadosDescalificados
+
+            return ResultadoRonda(
+                jugadores = listaFinal,
+                ganador = listaFinal.first(),
+                hayEmpate = false,
+                empatados = emptyList()
+            )
+        }
+
+        val menorPuntuacion = resultadosActivos.first().puntuacion
+        val empatados = resultadosActivos.filter { it.puntuacion == menorPuntuacion }
         val hayEmpate = empatados.size > 1
 
-        // En empate todos los empatados son "ganadores"
-        val resultadosFinales = resultados.map { resultado ->
+        val resultadosActivosFinales = resultadosActivos.map { resultado ->
             resultado.copy(esGanador = resultado.puntuacion == menorPuntuacion)
         }
 
         return ResultadoRonda(
-            jugadores = resultadosFinales,
-            ganador = resultadosFinales.first(),
+            jugadores = resultadosActivosFinales + resultadosDescalificados,
+            ganador = resultadosActivosFinales.first(),
             hayEmpate = hayEmpate,
-            empatados = resultadosFinales.filter { it.esGanador }
+            empatados = resultadosActivosFinales.filter { it.esGanador }
         )
     }
 
