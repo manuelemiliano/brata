@@ -43,8 +43,6 @@ import android.widget.Toast
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.boundsInRoot
 import kotlinx.coroutines.delay
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.positionInRoot
@@ -57,9 +55,14 @@ import com.aguado.bratagame.DescarteFreeAnimando
 import com.aguado.bratagame.EspiaAnimando
 import com.aguado.bratagame.VentanaFinalRonda
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import kotlin.math.ceil
+import androidx.compose.ui.text.style.TextOverflow
+import com.aguado.bratagame.EntregaCartaEspiadoAnimando
+import com.aguado.bratagame.HistorialJugada
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Divider
 
 @Composable
 fun GameTableScreen(
@@ -74,10 +77,6 @@ fun GameTableScreen(
     var adelantadoId by remember { mutableStateOf<String?>(null) }
     var seleccionCambioPropioActiva by remember { mutableStateOf(false) }
 
-    var seleccionSinVer by remember {
-        mutableStateOf<List<CartaEnMesa>>(emptyList())
-    }
-
     var mostrarSelectorCartaPropia by remember { mutableStateOf(false) }
     var cartaEspiadaParaDescartar by remember { mutableStateOf<Carta?>(null) }
     var propietarioEspiadoId by remember { mutableStateOf("") }
@@ -90,8 +89,15 @@ fun GameTableScreen(
         mutableStateOf<Set<MesaCardKey>>(emptySet())
     }
 
+    var seleccionSinVer by remember { mutableStateOf<List<CartaEnMesa>>(emptyList()) }
+    var accionPoderEnProceso by remember {
+        mutableStateOf(false)
+    }
+
     var seleccionVoyObjetivoActiva by remember { mutableStateOf(false) }
     var seleccionVoyEntregaActiva by remember { mutableStateOf(false) }
+
+    var mostrarHistorialJugadas by remember { mutableStateOf(false) }
 
     var cartasAlejadasVisibles by remember { mutableStateOf(true) }
 
@@ -107,6 +113,9 @@ fun GameTableScreen(
     }
 
     val salaActual = datosSala ?: return
+
+    val historialJugadasOrdenado = salaActual.historialJugadas.values
+        .sortedBy { it.timestamp }
 
     val ventanaFinalRonda = salaActual.ventanaFinalRonda
 
@@ -167,12 +176,47 @@ fun GameTableScreen(
     val oponentes = ordenJugadores.drop(1).mapNotNull { id -> salaActual.jugadores[id] }
     val estadoTurno = TurnManager.calcularEstadoTurno(jugadorLocal.id, salaActual)
     val estadoPoder = CardPowerResolver.calcularEstadoPoder(jugadorLocal.id, salaActual)
+
+    val hayAnimacionCambioActiva =
+        salaActual.swapAnimando != null ||
+                salaActual.cambioPropioAnimando != null
+
+    val hayPoderBloqueante =
+        estadoPoder.hayPoderActivo ||
+                seleccionCambioPropioActiva ||
+                seleccionCartaParaEspiadoActiva ||
+                seleccionCartaParaAdelantadoActiva ||
+                seleccionVoyObjetivoActiva ||
+                seleccionVoyEntregaActiva ||
+                accionPoderEnProceso ||
+                hayAnimacionCambioActiva
+
+    val bloquearInteraccionMesa =
+        accionPoderEnProceso ||
+                hayAnimacionCambioActiva
+
     val cimaDscarte = salaActual.mazoDescarte.lastOrNull()
     val context = LocalContext.current
 
     val descarteEspontaneoFirebase = salaActual.descarteEspontaneoAnimando
-
     val descarteFreeFirebase = salaActual.descarteFreeAnimando
+    val entregaCartaEspiadoFirebase = salaActual.entregaCartaEspiadoAnimando
+
+    LaunchedEffect(
+        estadoPoder.hayPoderActivo,
+        salaActual.swapAnimando,
+        salaActual.cambioPropioAnimando,
+        salaActual.cartaPoderActiva
+    ) {
+        val poderYaNoActivo = !estadoPoder.hayPoderActivo
+        val sinAnimacionCambio =
+            salaActual.swapAnimando == null &&
+                    salaActual.cambioPropioAnimando == null
+
+        if (poderYaNoActivo && sinAnimacionCambio) {
+            accionPoderEnProceso = false
+        }
+    }
 
     LaunchedEffect(
         salaActual.brataActivada,
@@ -195,6 +239,16 @@ fun GameTableScreen(
                 duracionMs = 5000L
             )
         }
+    }
+
+    LaunchedEffect(entregaCartaEspiadoFirebase?.id) {
+        val anim = entregaCartaEspiadoFirebase ?: return@LaunchedEffect
+
+        if (anim.ejecutorId != jugadorLocal.id) return@LaunchedEffect
+
+        delay(anim.duracionMs + 350L)
+
+        GameActions.limpiarAnimacionEntregaCartaEspiado(idSala)
     }
 
     LaunchedEffect(ventanaFinalRonda?.id) {
@@ -452,7 +506,9 @@ fun GameTableScreen(
         listOfNotNull(
             cartaSwapA?.let { it.propietarioId to it.posicion },
             cartaSwapB?.let { it.propietarioId to it.posicion },
-            cartaCambioPropioAnimando?.let { it.jugadorId to it.posicion }
+            cartaCambioPropioAnimando?.let { it.jugadorId to it.posicion },
+            entregaCartaEspiadoFirebase?.let { it.origenJugadorId to it.origenPosicion },
+            entregaCartaEspiadoFirebase?.let { it.destinoJugadorId to it.destinoPosicion }
         ).toSet()
 
 
@@ -467,6 +523,15 @@ fun GameTableScreen(
 
     ProvideMesaCardLayout(mesaLayout) {
         Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0D3311))) {
+
+            if (mostrarHistorialJugadas) {
+                HistorialJugadasModal(
+                    historial = historialJugadasOrdenado,
+                    onCerrar = {
+                        mostrarHistorialJugadas = false
+                    }
+                )
+            }
 
             Image(
                 painter = painterResource(id = R.drawable.brata_bg),
@@ -494,7 +559,11 @@ fun GameTableScreen(
                         esLocal = false,
                         esObservador = esObservador,
                         rotacion = posicionMesa.rotacion,
+                        bloquearInteraccionMesa = bloquearInteraccionMesa,
                         espiaAnimando = espiaAnimandoFirebase,
+                        onHistorialClick = {
+                            mostrarHistorialJugadas = true
+                        },
                         cartasSeleccionadasVisualmente = cartasSeleccionadasVisualmente,
                         esTurnoActual = esTurnoOponente,
                         esJugadorQuePresionoBrata = salaActual.brataActivada &&
@@ -554,6 +623,8 @@ fun GameTableScreen(
                                 seleccionSinVer = seleccionSinVer,
                                 onSeleccionSinVer = { seleccionSinVer = it },
                                 onSwapSinVerPendiente = { cartaA, cartaB ->
+                                    accionPoderEnProceso = true
+
                                     GameActions.iniciarAnimacionSwap(
                                         salaId = idSala,
                                         ejecutorId = jugadorLocal.id,
@@ -565,6 +636,8 @@ fun GameTableScreen(
                                     )
                                 },
                                 onSwapViendo = { espiada, destino ->
+                                    accionPoderEnProceso = true
+
                                     GameActions.iniciarAnimacionSwap(
                                         salaId = idSala,
                                         ejecutorId = jugadorLocal.id,
@@ -586,7 +659,8 @@ fun GameTableScreen(
                                             )
                                         }
                                     },
-                                idSala = idSala
+                                idSala = idSala,
+                                bloquearInteraccionMesa = bloquearInteraccionMesa
                             )
                         }
                     )
@@ -647,6 +721,10 @@ fun GameTableScreen(
                     esLocal = true,
                     esObservador = false,
                     rotacion = 0f,
+                    bloquearInteraccionMesa = bloquearInteraccionMesa,
+                    onHistorialClick = {
+                        mostrarHistorialJugadas = true
+                    },
                     cartasSeleccionadasVisualmente = cartasSeleccionadasVisualmente,
                     esTurnoActual = estadoTurno.esMiTurno,
                     esJugadorQuePresionoBrata = salaActual.brataActivada &&
@@ -778,6 +856,18 @@ fun GameTableScreen(
                                     Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                                 }
                             } else {
+                                val posicionEspiada = salaActual.jugadores[propietarioEspiadoId]
+                                    ?.cartas
+                                    ?.mesaNormalizadaACuatroCasillas()
+                                    ?.indexOfFirst { it.id == cartaEspiadaActual.id }
+                                    ?: -1
+
+                                if (posicionEspiada >= 0) {
+                                    mesaLayout.freezeCentersForSwap(
+                                        MesaCardKey(cartaSeleccionada.propietarioId, cartaSeleccionada.posicion),
+                                        MesaCardKey(propietarioEspiadoId, posicionEspiada)
+                                    )
+                                }
                                 GameActions.descartarCartaEspiada(
                                     salaId = idSala,
                                     jugadorId = jugadorLocal.id,
@@ -890,6 +980,8 @@ fun GameTableScreen(
                             seleccionSinVer = seleccionSinVer,
                             onSeleccionSinVer = { seleccionSinVer = it },
                             onSwapSinVerPendiente = { cartaA, cartaB ->
+                                accionPoderEnProceso = true
+
                                 GameActions.iniciarAnimacionSwap(
                                     salaId = idSala,
                                     ejecutorId = jugadorLocal.id,
@@ -901,6 +993,8 @@ fun GameTableScreen(
                                 )
                             },
                             onSwapViendo = { espiada, destino ->
+                                accionPoderEnProceso = true
+
                                 GameActions.iniciarAnimacionSwap(
                                     salaId = idSala,
                                     ejecutorId = jugadorLocal.id,
@@ -922,7 +1016,8 @@ fun GameTableScreen(
                                         )
                                     }
                                 },
-                            idSala = idSala
+                            idSala = idSala,
+                            bloquearInteraccionMesa = bloquearInteraccionMesa
                         )
                     }
                 )
@@ -938,12 +1033,14 @@ fun GameTableScreen(
                     puedeRobarDelPozo = !jugadorLocalDescalificado &&
                             estadoTurno.puedeRobar &&
                             voyPendienteLocal == null &&
-                            !ventanaFinalActiva,
+                            !ventanaFinalActiva &&
+                            !hayPoderBloqueante,
 
                     puedeRobarDelDescarte = !jugadorLocalDescalificado &&
                             estadoTurno.puedeRobarDelDescarte &&
                             voyPendienteLocal == null &&
-                            !ventanaFinalActiva,
+                            !ventanaFinalActiva &&
+                            !hayPoderBloqueante,
 
                     onRobarPozo = {
                         GameActions.solicitarRoboDelPozoConVoy(
@@ -1405,6 +1502,14 @@ fun GameTableScreen(
                 }
             }
 
+            val animEntregaEspiado = salaActual.entregaCartaEspiadoAnimando
+
+            if (animEntregaEspiado != null) {
+                CartaEntregaEspiadoAnimation(
+                    animacion = animEntregaEspiado
+                )
+            }
+
             val animDescarteFree = salaActual.descarteFreeAnimando
 
             if (animDescarteFree != null) {
@@ -1547,6 +1652,102 @@ private fun PanelEsperaRoboVoy(
 }
 
 @Composable
+private fun CartaEntregaEspiadoAnimation(
+    animacion: EntregaCartaEspiadoAnimando
+) {
+    val holder = LocalMesaCardPositions.current
+    val density = LocalDensity.current
+
+    val keyOrigen = remember(animacion.origenJugadorId, animacion.origenPosicion) {
+        MesaCardKey(animacion.origenJugadorId, animacion.origenPosicion)
+    }
+
+    val keyDestino = remember(animacion.destinoJugadorId, animacion.destinoPosicion) {
+        MesaCardKey(animacion.destinoJugadorId, animacion.destinoPosicion)
+    }
+
+    val mediaCartaPx = remember(density) {
+        with(density) {
+            Offset(
+                x = 25.dp.toPx(),
+                y = 35.dp.toPx()
+            )
+        }
+    }
+
+    var overlayOrigenEnRaiz by remember {
+        mutableStateOf<Offset?>(null)
+    }
+
+    var elapsedLocal by remember(animacion.id) {
+        mutableStateOf(0L)
+    }
+
+    LaunchedEffect(animacion.id) {
+        val inicioLocal = System.currentTimeMillis()
+
+        while (elapsedLocal < animacion.duracionMs) {
+            elapsedLocal = System.currentTimeMillis() - inicioLocal
+            delay(16L)
+        }
+
+        elapsedLocal = animacion.duracionMs
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { coords ->
+                overlayOrigenEnRaiz = coords.positionInRoot()
+            }
+    ) {
+        val origen = holder?.frozenCenterOf(keyOrigen) ?: holder?.centerOf(keyOrigen)
+        val destino = holder?.frozenCenterOf(keyDestino) ?: holder?.centerOf(keyDestino)
+        val overlay = overlayOrigenEnRaiz
+
+        if (origen != null && destino != null && overlay != null) {
+            val progress =
+                (elapsedLocal.toFloat() / animacion.duracionMs.toFloat())
+                    .coerceIn(0f, 1f)
+
+            val easing = FastOutSlowInEasing.transform(progress)
+
+            val startX = origen.x - mediaCartaPx.x - overlay.x
+            val startY = origen.y - mediaCartaPx.y - overlay.y
+
+            val dx = destino.x - origen.x
+            val dy = destino.y - origen.y
+
+            val rotacionOrigen = holder?.rotationOf(animacion.origenJugadorId) ?: 0f
+            val rotacionDestino = holder?.rotationOf(animacion.destinoJugadorId) ?: 0f
+            val diferenciaRotacion =
+                ((rotacionDestino - rotacionOrigen + 540f) % 360f) - 180f
+
+            Box(
+                modifier = Modifier.graphicsLayer {
+                    translationX = startX + dx * easing
+                    translationY = startY + dy * easing
+
+                    rotationZ = rotacionOrigen + diferenciaRotacion * easing
+
+                    scaleX = 1f
+                    scaleY = 1f
+                    alpha = 1f
+                    shadowElevation = 18f
+                }
+            ) {
+                CartaVisual(
+                    abierta = true,
+                    valor = animacion.valor,
+                    palo = mappingPalo(animacion.palo),
+                    modifier = Modifier.size(50.dp, 70.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun IndicadorErroresDescarte(
     errores: Int,
     descalificado: Boolean,
@@ -1621,6 +1822,8 @@ fun AreaJugador(
     esLocal: Boolean,
     esObservador: Boolean,
     rotacion: Float,
+    bloquearInteraccionMesa: Boolean = false,
+    onHistorialClick: () -> Unit = {},
     espiaAnimando: EspiaAnimando? = null,
     cartasSeleccionadasVisualmente: Set<MesaCardKey> = emptySet(),
     onCartaSeleccionadaVisualmente: (CartaEnMesa) -> Unit = {},
@@ -1702,6 +1905,7 @@ fun AreaJugador(
                         jugadorLocalIdActual = jugadorLocalIdActual,
                         esLocal = esLocal,
                         esObservador = esObservador,
+                        bloquearInteraccionMesa = bloquearInteraccionMesa,
                         estadoPoder = estadoPoder,
                         cartaEspiadaId = cartaEspiadaId,
                         cartasAlejadasVisibles = cartasAlejadasVisibles,
@@ -1833,14 +2037,47 @@ fun AreaJugador(
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = textoInformativoMesa,
-                                color = Color.White,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                textAlign = TextAlign.Center,
-                                maxLines = 3
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = textoInformativoMesa,
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+
+                                Spacer(modifier = Modifier.width(6.dp))
+
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .background(
+                                            color = Color.Black.copy(alpha = 0.35f),
+                                            shape = RoundedCornerShape(8.dp)
+                                        )
+                                        .border(
+                                            width = 1.dp,
+                                            color = Color(0xFF2196F3),
+                                            shape = RoundedCornerShape(8.dp)
+                                        )
+                                        .clickable {
+                                            onHistorialClick()
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "≡",
+                                        color = Color.White,
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Black
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -1854,6 +2091,7 @@ fun AreaJugador(
                         jugadorLocalIdActual = jugadorLocalIdActual,
                         esLocal = esLocal,
                         esObservador = esObservador,
+                        bloquearInteraccionMesa = bloquearInteraccionMesa,
                         estadoPoder = estadoPoder,
                         cartaEspiadaId = cartaEspiadaId,
                         cartasAlejadasVisibles = cartasAlejadasVisibles,
@@ -1925,6 +2163,7 @@ fun CuadradoCartasInteractivo(
     jugadorLocalIdActual: String,
     esLocal: Boolean,
     esObservador: Boolean,
+    bloquearInteraccionMesa: Boolean = false,
     espiaAnimando: EspiaAnimando? = null,
     cartasSeleccionadasVisualmente: Set<MesaCardKey> = emptySet(),
     onCartaSeleccionadaVisualmente: (CartaEnMesa) -> Unit = {},
@@ -2014,29 +2253,39 @@ fun CuadradoCartasInteractivo(
                     val estaSeleccionadaVisualmente =
                         cartasSeleccionadasVisualmente.contains(keyVisual)
 
-                    val esSeleccionable = estadoPoder.cartasSeleccionables.contains(carta.id)
+                    val puedeInteractuarConEstaCarta =
+                        !bloquearInteraccionMesa
+
+                    val esSeleccionable =
+                        puedeInteractuarConEstaCarta &&
+                                estadoPoder.cartasSeleccionables.contains(carta.id)
 
                     val esSeleccionCambioPropio =
-                        esLocal &&
+                        puedeInteractuarConEstaCarta &&
+                                esLocal &&
                                 habilitarSeleccionCambioPropio &&
                                 onSeleccionCambioPropio != null
 
                     val esSeleccionCartaParaEspiado =
-                        esLocal &&
+                        puedeInteractuarConEstaCarta &&
+                                esLocal &&
                                 habilitarSeleccionCartaParaEspiado &&
                                 onSeleccionCartaParaEspiado != null
 
                     val esSeleccionCartaParaAdelantado =
-                        esLocal &&
+                        puedeInteractuarConEstaCarta &&
+                                esLocal &&
                                 habilitarSeleccionCartaParaAdelantado &&
                                 onSeleccionCartaParaAdelantado != null
 
                     val esSeleccionVoyObjetivo =
-                        habilitarSeleccionVoyObjetivo &&
+                        puedeInteractuarConEstaCarta &&
+                                habilitarSeleccionVoyObjetivo &&
                                 onSeleccionVoyObjetivo != null
 
                     val esSeleccionVoyEntrega =
-                        esLocal &&
+                        puedeInteractuarConEstaCarta &&
+                                esLocal &&
                                 habilitarSeleccionVoyEntrega &&
                                 onSeleccionVoyEntrega != null
 
@@ -2136,7 +2385,8 @@ fun CuadradoCartasInteractivo(
                             carta.id == idCartaAnimacionDescarteEspontaneo
 
                         val clicEspontaneo =
-                            esLocal &&
+                            !bloquearInteraccionMesa &&
+                                    esLocal &&
                                     habilitarDescarteEspontaneo &&
                                     onDescarteEspontaneo != null &&
                                     !esSeleccionable &&
@@ -2582,8 +2832,10 @@ private fun manejarCartaTocada(
     onSwapViendo: ((cartaEspiada: CartaEnMesa, cartaDestino: CartaEnMesa) -> Unit)? = null,
     // Carta actualmente espiada (necesaria para el swap viendo)
     cartaEspiadaEnMesa: CartaEnMesa? = null,
-    idSala: String
+    idSala: String,
+    bloquearInteraccionMesa: Boolean = false,
 ){
+    if (bloquearInteraccionMesa) return
     if (!estadoPoder.hayPoderActivo || !estadoPoder.esMiPoder) return
 
     when (estadoPoder.tipoPoder) {
@@ -2614,6 +2866,16 @@ private fun manejarCartaTocada(
             }
         }
         TipoPoder.CAMBIAR_SIN_VER -> {
+            val yaSeleccionada =
+                seleccionSinVer.any {
+                    it.propietarioId == cartaEnMesa.propietarioId &&
+                            it.posicion == cartaEnMesa.posicion
+                }
+
+            if (yaSeleccionada) return
+
+            if (seleccionSinVer.size >= 2) return
+
             val nuevaSeleccion = seleccionSinVer + cartaEnMesa
 
             if (nuevaSeleccion.size == 2) {
@@ -2734,7 +2996,131 @@ fun calcularPosicionJugadorMesa(index: Int, totalOponentes: Int): PosicionJugado
     }
 }
 
+@Composable
+private fun HistorialJugadasModal(
+    historial: List<HistorialJugada>,
+    onCerrar: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.78f))
+            .clickable { onCerrar() }
+            .padding(18.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.82f)
+                .background(
+                    color = Color(0xFF102313).copy(alpha = 0.92f),
+                    shape = RoundedCornerShape(18.dp)
+                )
+                .border(
+                    width = 1.dp,
+                    color = Color(0xFF2196F3),
+                    shape = RoundedCornerShape(18.dp)
+                )
+                .padding(14.dp)
+                .clickable(enabled = false) {},
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "Historial de jugadas",
+                    color = Color.White,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Black,
+                    modifier = Modifier.weight(1f)
+                )
 
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .background(
+                            color = Color.Black.copy(alpha = 0.35f),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = Color(0xFF2196F3),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        .clickable { onCerrar() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "×",
+                        color = Color.White,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Black
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            if (historial.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Aún no hay movimientos registrados.",
+                        color = Color.White.copy(alpha = 0.75f),
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    reverseLayout = false
+                ) {
+                    items(historial) { item ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = item.mensaje,
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+
+                            Text(
+                                text = formatoHoraHistorial(item.timestamp),
+                                color = Color.White.copy(alpha = 0.45f),
+                                fontSize = 10.sp
+                            )
+                        }
+
+                        Divider(
+                            color = Color.White.copy(alpha = 0.10f),
+                            thickness = 1.dp
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatoHoraHistorial(timestamp: Long): String {
+    if (timestamp <= 0L) return ""
+
+    val formato = java.text.SimpleDateFormat(
+        "HH:mm:ss",
+        java.util.Locale.getDefault()
+    )
+
+    return formato.format(java.util.Date(timestamp))
+}
 @Composable
 private fun CartaDescarteFreeHaciaPozoAnimation(
     animacion: DescarteFreeAnimando,

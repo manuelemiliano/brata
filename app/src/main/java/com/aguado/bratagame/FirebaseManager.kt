@@ -7,6 +7,7 @@ import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
 import com.google.firebase.database.ktx.database
 import com.google.firebase.ktx.Firebase
+import com.aguado.bratagame.EntregaCartaEspiadoAnimando
 
 object FirebaseManager {
 
@@ -106,11 +107,13 @@ object FirebaseManager {
         actualizaciones["brataJugadorId"] = ""
         actualizaciones["cartaPoderActiva"] = mapOf<String, Any>()
         actualizaciones["jugadaActual"] = mapOf<String, Any>()
+        actualizaciones["historialJugadas"] = mapOf<String, Any>()
         actualizaciones["swapAnimando"] = mapOf<String, Any>()
         actualizaciones["cambioPropioAnimando"] = null
         actualizaciones["descarteEspontaneoAnimando"] = mapOf<String, Any>()
         actualizaciones["descarteFreeAnimando"] = mapOf<String, Any>()
         actualizaciones["espiaAnimando"] = mapOf<String, Any>()
+        actualizaciones["entregaCartaEspiadoAnimando"] = mapOf<String, Any>()
         actualizaciones["cadenaDescarte"] = mapOf<String, Any>()
         actualizaciones["adelantadoPendiente"] = mapOf<String, Any>()
         actualizaciones["voyPendiente"] = mapOf<String, Any>()
@@ -179,11 +182,13 @@ object FirebaseManager {
         // Estados de poderes / animaciones / jugadas.
         actualizaciones["cartaPoderActiva"] = mapOf<String, Any>()
         actualizaciones["jugadaActual"] = mapOf<String, Any>()
+        actualizaciones["historialJugadas"] = mapOf<String, Any>()
         actualizaciones["swapAnimando"] = mapOf<String, Any>()
         actualizaciones["cambioPropioAnimando"] = null
         actualizaciones["descarteEspontaneoAnimando"] = mapOf<String, Any>()
         actualizaciones["descarteFreeAnimando"] = mapOf<String, Any>()
         actualizaciones["espiaAnimando"] = mapOf<String, Any>()
+        actualizaciones["entregaCartaEspiadoAnimando"] = mapOf<String, Any>()
         actualizaciones["cadenaDescarte"] = mapOf<String, Any>()
         actualizaciones["adelantadoPendiente"] = mapOf<String, Any>()
         actualizaciones["voyPendiente"] = mapOf<String, Any>()

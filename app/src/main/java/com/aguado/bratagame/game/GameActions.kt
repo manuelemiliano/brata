@@ -23,6 +23,7 @@ import com.aguado.bratagame.DescarteEspontaneoAnimando
 import com.aguado.bratagame.DescarteFreeAnimando
 import com.aguado.bratagame.EspiaAnimando
 import com.aguado.bratagame.VentanaFinalRonda
+import com.aguado.bratagame.HistorialJugada
 
 // ─────────────────────────────────────────────
 // GAME ACTIONS
@@ -69,6 +70,90 @@ object GameActions {
 
         salasRef.child(salaId).updateChildren(updates)
     }
+
+    fun limpiarAnimacionEntregaCartaEspiado(
+        salaId: String
+    ) {
+        val updates = mutableMapOf<String, Any?>()
+        updates["entregaCartaEspiadoAnimando"] = mapOf<String, Any>()
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
+
+    private const val MAX_HISTORIAL_JUGADAS = 120
+
+    private fun nombreJugadorSeguro(
+        sala: Sala,
+        jugadorId: String
+    ): String {
+        return sala.jugadores[jugadorId]?.nombre
+            ?.takeIf { it.isNotBlank() }
+            ?: "Jugador"
+    }
+
+    private fun agregarHistorialJugadaEnUpdates(
+        updates: MutableMap<String, Any?>,
+        sala: Sala,
+        jugadorId: String,
+        tipo: String,
+        mensaje: String
+    ) {
+        if (mensaje.isBlank()) return
+
+        val ahora = System.currentTimeMillis()
+        val id = "hist_${ahora}_${java.util.UUID.randomUUID()}"
+
+        val entrada = HistorialJugada(
+            id = id,
+            jugadorId = jugadorId,
+            jugadorNombre = nombreJugadorSeguro(sala, jugadorId),
+            tipo = tipo,
+            mensaje = mensaje,
+            timestamp = ahora
+        )
+
+        updates["historialJugadas/$id"] = entrada
+
+        // Limpieza defensiva para evitar que el historial crezca sin límite.
+        val historialActual = sala.historialJugadas.values
+            .sortedBy { it.timestamp }
+
+        val excedentes = historialActual.size - MAX_HISTORIAL_JUGADAS + 1
+
+        if (excedentes > 0) {
+            historialActual
+                .take(excedentes)
+                .forEach { antigua ->
+                    if (antigua.id.isNotBlank()) {
+                        updates["historialJugadas/${antigua.id}"] = null
+                    }
+                }
+        }
+    }
+
+    fun registrarHistorialJugada(
+        salaId: String,
+        sala: Sala,
+        jugadorId: String,
+        tipo: String,
+        mensaje: String
+    ) {
+        val updates = mutableMapOf<String, Any?>()
+
+        agregarHistorialJugadaEnUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            tipo = tipo,
+            mensaje = mensaje
+        )
+
+        if (updates.isNotEmpty()) {
+            salasRef.child(salaId).updateChildren(updates)
+        }
+    }
+
 
     // ─────────────────────────────────────────
     // JUGADA ACTUAL PARA BANNER SUPERIOR
@@ -145,6 +230,14 @@ object GameActions {
 
         updates["mazoRobar"] = mazo
         updates["jugadores/$jugadorId/cartaEnMano"] = cartaRobada
+
+        agregarHistorialJugadaEnUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            tipo = "ROBAR_POZO",
+            mensaje = "${nombreJugadorSeguro(sala, jugadorId)} robó del pozo."
+        )
 
         romperCadenaSiJugadorEsperado(
             updates = updates,
@@ -248,6 +341,14 @@ object GameActions {
         updates["mazoDescarte"] = descarte
         updates["jugadores/$jugadorId/cartaEnMano"] = paraMano
 
+        agregarHistorialJugadaEnUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            tipo = "ROBAR_DESCARTE",
+            mensaje = "${nombreJugadorSeguro(sala, jugadorId)} robó ${cartaRobada.valor} del descarte."
+        )
+
         romperCadenaSiJugadorEsperado(
             updates = updates,
             sala = sala,
@@ -286,6 +387,14 @@ object GameActions {
         updates["mazoDescarte"] = descarte
         updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>()
         updates["jugadaActual"] = mapOf<String, Any>()
+
+        agregarHistorialJugadaEnUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            tipo = "DESCARTAR_MANO",
+            mensaje = "${nombreJugadorSeguro(sala, jugadorId)} descartó ${cartaEnMano.valor}."
+        )
 
         aplicarAvancePorDescarteEncadenado(
             updates = updates,
@@ -599,6 +708,14 @@ object GameActions {
             "valorCartaActivadora" to cartaEnMano.valor
         )
 
+        agregarHistorialJugadaEnUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            tipo = "ACTIVAR_ESPIAR",
+            mensaje = "${nombreJugadorSeguro(sala, jugadorId)} activó poder de espiar."
+        )
+
         salasRef.child(salaId).updateChildren(updates)
     }
 
@@ -644,6 +761,14 @@ object GameActions {
             "tipo" to "ESPIAR",
             "subaccion" to "Viendo una carta",
             "timestamp" to ahora
+        )
+
+        agregarHistorialJugadaEnUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            tipo = "ESPIAR_CARTA",
+            mensaje = "${nombreJugadorSeguro(sala, jugadorId)} espió una carta."
         )
 
         salasRef.child(salaId).updateChildren(updates)
@@ -746,25 +871,60 @@ object GameActions {
         cartasJugador[posicionEspiada] = MesaSlots.VACIA
 
         val descarte = sala.mazoDescarte.toMutableList()
-        descarte.add(
-            cartaADescartar.copy(
-                descartadaPorJugadorId = jugadorId,
-                descartadaDesdeJuegoMesa = true,
-                comodinRobadoDelDescarteValido = false
-            )
+
+// Índice real donde entra la carta espiada al descarte.
+// Si después otra carta cae encima, esta conserva su lugar correcto.
+        val indiceDescarteInsertado = descarte.size
+
+        val cartaEspiadaAlDescarte = cartaADescartar.copy(
+            descartadaPorJugadorId = jugadorId,
+            descartadaDesdeJuegoMesa = true,
+            comodinRobadoDelDescarteValido = false,
+            origenRobo = ""
         )
 
+        descarte.add(cartaEspiadaAlDescarte)
+
+        val ahora = System.currentTimeMillis()
+        val animIdDescarte = java.util.UUID.randomUUID().toString()
+
         val updates = mutableMapOf<String, Any?>()
+
         updates["jugadores/$jugadorId/cartas"] = cartasJugador
         updates["mazoDescarte"] = descarte
         updates["cartaPoderActiva"] = mapOf<String, Any>()
         updates["jugadaActual"] = mapOf<String, Any>()
+
+// Animación:
+// carta espiada propia hacia el pozo de descarte.
+// Será visible para todos los jugadores porque se guarda en Firebase.
+        updates["descarteEspontaneoAnimando"] = DescarteEspontaneoAnimando(
+            id = animIdDescarte,
+            ejecutorId = jugadorId,
+            jugadorId = jugadorId,
+            posicion = posicionEspiada,
+            cartaId = cartaADescartar.id,
+            valor = cartaADescartar.valor,
+            palo = cartaADescartar.palo,
+            indiceDescarte = indiceDescarteInsertado,
+            timestampInicio = ahora,
+            duracionViajeMs = 650L,
+            duracionReboteMs = 450L
+        )
 
         aplicarAvancePorDescarteEncadenado(
             updates = updates,
             sala = sala,
             jugadorId = jugadorId,
             valorDescartado = cartaADescartar.valor
+        )
+
+        agregarHistorialJugadaEnUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            tipo = "DESCARTAR_CARTA_ESPIADA_PROPIA",
+            mensaje = "${nombreJugadorSeguro(sala, jugadorId)} descartó su carta espiada ${cartaADescartar.valor}."
         )
 
         salasRef.child(salaId).updateChildren(updates)
@@ -844,6 +1004,14 @@ object GameActions {
             jugadorId = jugadorId
         )
 
+        agregarHistorialJugadaEnUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            tipo = "DESCARTAR_CARTA_ESPIADA",
+            mensaje = "${nombreJugadorSeguro(sala, jugadorId)} descartó la carta espiada ${cartaEspiada.valor} y entregó una carta."
+        )
+
         salasRef.child(salaId).updateChildren(updates)
     }
 
@@ -911,6 +1079,22 @@ object GameActions {
             onError = onError
         ) ?: return
 
+        val poder = sala.cartaPoderActiva
+
+        if (
+            poder == null ||
+            poder.jugadorId != jugadorId ||
+            poder.tipoPoder != TipoPoder.CAMBIAR_VIENDO
+        ) {
+            onError("No hay cambio viendo activo")
+            return
+        }
+
+        if (sala.swapAnimando != null) {
+            onError("Ya hay un cambio en proceso")
+            return
+        }
+
         updates["cartaPoderActiva"] = mapOf<String, Any>()
         updates["jugadaActual"] = mapOf<String, Any>()
 
@@ -976,6 +1160,23 @@ object GameActions {
         cartaBId: String,
         onError: (String) -> Unit = {}
     ) {
+
+        val poder = sala.cartaPoderActiva
+
+        if (
+            poder == null ||
+            poder.jugadorId != jugadorId ||
+            poder.tipoPoder != TipoPoder.CAMBIAR_SIN_VER
+        ) {
+            onError("No hay cambio sin ver activo")
+            return
+        }
+
+        if (sala.swapAnimando != null) {
+            onError("Ya hay un cambio en proceso")
+            return
+        }
+
         val updates = construirUpdatesIntercambioPorId(
             sala = sala,
             jugadorAId = jugadorAId,
@@ -1163,6 +1364,14 @@ object GameActions {
             duracionReboteMs = 450L
         )
 
+        agregarHistorialJugadaEnUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            tipo = "DESCARTE_ESPONTANEO",
+            mensaje = "${nombreJugadorSeguro(sala, jugadorId)} descartó ${cartaADescartar.valor} desde su juego."
+        )
+
         val ventanaFinal = sala.ventanaFinalRonda
 
         if (
@@ -1246,6 +1455,15 @@ object GameActions {
             // NO se suma error.
             updates["mazoRobar"] = pozo
             updates["jugadores/$jugadorId/cartas"] = mesa
+
+            agregarHistorialJugadaEnUpdates(
+                updates = updates,
+                sala = sala,
+                jugadorId = jugadorId,
+                tipo = "CASTIGO",
+                mensaje = "${nombreJugadorSeguro(sala, jugadorId)} recibió una carta de castigo."
+            )
+
         } else {
             // No hay espacio dentro de las 4 cartas principales.
             // No se roba carta. Ahora sí cuenta como error.
@@ -1254,6 +1472,18 @@ object GameActions {
 
             updates["jugadores/$jugadorId/erroresDescarte"] = nuevosErrores
             updates["jugadores/$jugadorId/descalificado"] = quedaDescalificado
+
+            agregarHistorialJugadaEnUpdates(
+                updates = updates,
+                sala = sala,
+                jugadorId = jugadorId,
+                tipo = "ERROR_DESCARTE",
+                mensaje = if (quedaDescalificado) {
+                    "${nombreJugadorSeguro(sala, jugadorId)} cometió su tercer error y quedó descalificado."
+                } else {
+                    "${nombreJugadorSeguro(sala, jugadorId)} cometió un error de descarte ($nuevosErrores de 3)."
+                }
+            )
 
             if (quedaDescalificado && sala.turnoActualId == jugadorId) {
                 updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
@@ -1326,6 +1556,14 @@ object GameActions {
 
         updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
 
+        agregarHistorialJugadaEnUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            tipo = "PASO_BRATA",
+            mensaje = "${nombreJugadorSeguro(sala, jugadorId)} pasó su turno final."
+        )
+
         salasRef.child(salaId).updateChildren(updates)
     }
 
@@ -1341,6 +1579,14 @@ object GameActions {
         updates["brataActivada"] = true
         updates["brataJugadorId"] = jugadorId
         updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
+
+        agregarHistorialJugadaEnUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            tipo = "BRATA",
+            mensaje = "${nombreJugadorSeguro(sala, jugadorId)} oprimió BRATA."
+        )
 
         romperCadenaSiJugadorEsperado(
             updates = updates,
@@ -1756,6 +2002,14 @@ object GameActions {
                         )
                     )
 
+                    registrarHistorialJugada(
+                        salaId = salaId,
+                        sala = sala,
+                        jugadorId = jugadorId,
+                        tipo = "VOY",
+                        mensaje = "${nombreJugadorSeguro(sala, jugadorId)} oprimió VOY."
+                    )
+
                     onResultado(true, "VOY reclamado")
                 } else {
                     onResultado(false, "Otro jugador ganó VOY primero")
@@ -1842,6 +2096,14 @@ object GameActions {
             updates["voyPendiente"] = mapOf<String, Any>()
             updates["jugadaActual"] = mapOf<String, Any>()
 
+            agregarHistorialJugadaEnUpdates(
+                updates = updates,
+                sala = sala,
+                jugadorId = jugadorId,
+                tipo = "VOY_FALLIDO",
+                mensaje = "${nombreJugadorSeguro(sala, jugadorId)} falló VOY."
+            )
+
             salasRef.child(salaId).updateChildren(updates)
             return
         }
@@ -1874,6 +2136,14 @@ object GameActions {
             "tipo" to "VOY",
             "subaccion" to "seleccionando una carta propia para entregar",
             "timestamp" to System.currentTimeMillis()
+        )
+
+        agregarHistorialJugadaEnUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            tipo = "VOY_CORRECTO",
+            mensaje = "${nombreJugadorSeguro(sala, jugadorId)} acertó VOY y descartó ${cartaSeleccionada.valor}."
         )
 
         salasRef.child(salaId).updateChildren(updates)
@@ -1961,6 +2231,14 @@ object GameActions {
 
         updates["voyPendiente"] = mapOf<String, Any>()
         updates["jugadaActual"] = mapOf<String, Any>()
+
+        agregarHistorialJugadaEnUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            tipo = "VOY_ENTREGA",
+            mensaje = "${nombreJugadorSeguro(sala, jugadorId)} entregó una carta al jugador afectado por VOY."
+        )
 
         salasRef.child(salaId).updateChildren(updates)
     }

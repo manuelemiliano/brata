@@ -183,6 +183,8 @@ data class Sala(
     // qué acción está realizando el jugador en turno.
     var jugadaActual: JugadaActual? = null,
 
+    var historialJugadas: Map<String, HistorialJugada> = emptyMap(),
+
     // Animación de intercambio en curso (null = sin animación activa)
     var swapAnimando: SwapAnimando? = null,
 
@@ -200,6 +202,8 @@ data class Sala(
 
     var espiaAnimando: EspiaAnimando? = null,
 
+    var entregaCartaEspiadoAnimando: EntregaCartaEspiadoAnimando? = null,
+
     var cadenaDescarte: CadenaDescarte? = null,
 
     var ventanaFinalRonda: VentanaFinalRonda? = null,
@@ -211,6 +215,16 @@ data class Sala(
 
     var partidaId: String = ""
 )
+
+data class HistorialJugada(
+    val id: String = "",
+    val jugadorId: String = "",
+    val jugadorNombre: String = "",
+    val tipo: String = "",
+    val mensaje: String = "",
+    val timestamp: Long = 0L
+)
+
 
 data class VentanaFinalRonda(
     val activa: Boolean = false,
@@ -411,4 +425,24 @@ data class DescarteFreeAnimando(
     val timestampInicio: Long = 0L,
     val duracionViajeMs: Long = 650L,
     val duracionReboteMs: Long = 450L
+)
+
+data class EntregaCartaEspiadoAnimando(
+    val id: String = "",
+    val ejecutorId: String = "",
+
+    // Carta que entrega el espía.
+    val origenJugadorId: String = "",
+    val origenPosicion: Int = -1,
+
+    // Espacio que dejó la carta espiada.
+    val destinoJugadorId: String = "",
+    val destinoPosicion: Int = -1,
+
+    val cartaId: String = "",
+    val valor: String = "",
+    val palo: String = "",
+
+    val timestampInicio: Long = 0L,
+    val duracionMs: Long = 650L
 )
