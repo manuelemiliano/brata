@@ -12,9 +12,22 @@ import com.aguado.bratagame.ui.screens.ResultScreen
 import java.util.UUID
 import android.content.Context
 import com.aguado.bratagame.game.TurnManager
+import android.app.ActivityManager
+import android.os.Build
+import androidx.core.content.ContextCompat
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            setTaskDescription(
+                ActivityManager.TaskDescription(
+                    getString(R.string.app_name),
+                    R.mipmap.ic_launcher,
+                    ContextCompat.getColor(this, R.color.task_color)
+                )
+            )
+        }
 
         val prefs = getSharedPreferences("brata_prefs", Context.MODE_PRIVATE)
 
@@ -39,6 +52,10 @@ class MainActivity : ComponentActivity() {
             var idSalaActual by remember { mutableStateOf<String?>(null) }
             var salaActual by remember { mutableStateOf<Sala?>(null) }
             var pantalla by remember { mutableStateOf(Pantalla.LOGIN) }
+
+            // Guarda la última partida que este dispositivo ya reconoció.
+            // Si partidaId cambia, significa que empezó una revancha o nueva partida.
+            var ultimaPartidaIdVista by rememberSaveable { mutableStateOf("") }
 
             LaunchedEffect(Unit) {
                 val salaGuardada = prefs.getString("sala_id", null)
@@ -91,10 +108,19 @@ class MainActivity : ComponentActivity() {
 
                         // Evento 2: Inicio de partida o revancha.
                         // Si inicia una nueva partida desde lobby, todos entran a mesa.
+                        // Evento 2: Inicio de partida o revancha.
+                        // Cuando cambia partidaId, todos deben entrar a MESA,
+                        // incluso si estaban en RESULTADO.
+                        val hayNuevaPartida =
+                            sala.estaEnJuego &&
+                                    sala.partidaId.isNotBlank() &&
+                                    sala.partidaId != ultimaPartidaIdVista
+
                         if (
-                            pantalla == Pantalla.LOBBY &&
-                            sala.estaEnJuego
+                            hayNuevaPartida &&
+                            pantalla != Pantalla.LOGIN
                         ) {
+                            ultimaPartidaIdVista = sala.partidaId
                             pantalla = Pantalla.MESA
                         }
 
@@ -102,6 +128,8 @@ class MainActivity : ComponentActivity() {
                         // Puede terminar por BRATA o porque solo queda un jugador activo.
                         if (
                             pantalla == Pantalla.MESA &&
+                            sala.partidaId.isNotBlank() &&
+                            sala.partidaId == ultimaPartidaIdVista &&
                             TurnManager.debeEvaluarFinal(sala)
                         ) {
                             pantalla = Pantalla.RESULTADO
@@ -240,12 +268,14 @@ class MainActivity : ComponentActivity() {
                             onRevancha = {
                                 if (jugador.esAnfitrion) {
                                     val salaId = idSalaActual ?: return@ResultScreen
+
                                     FirebaseManager.iniciarPartida(
                                         salaId = salaId,
                                         jugadores = sala.jugadores.values.toList()
                                     )
 
-                                    pantalla = Pantalla.MESA
+                                    // No forzamos pantalla aquí.
+                                    // El listener detectará partidaId nuevo y moverá a TODOS a MESA.
                                 }
                             },
                             onIrAlLobby = {

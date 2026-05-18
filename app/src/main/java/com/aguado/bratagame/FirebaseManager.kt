@@ -112,7 +112,11 @@ object FirebaseManager {
         actualizaciones["adelantadoPendiente"] = mapOf<String, Any>()
         actualizaciones["voyPendiente"] = mapOf<String, Any>()
 
-        // 8. Marcar juego iniciado — dispara navegación en todos los clientes
+        // 8. Identificador de partida.
+        // Sirve para que todos los clientes detecten revancha aunque estén en RESULTADO.
+        actualizaciones["partidaId"] = "partida_${System.currentTimeMillis()}"
+
+        // 9. Marcar juego iniciado — dispara navegación en todos los clientes
         actualizaciones["estaEnJuego"] = true
 
         salasRef.child(salaId).updateChildren(actualizaciones)
@@ -156,6 +160,7 @@ object FirebaseManager {
 
         // Estados generales de partida.
         actualizaciones["turnoActualId"] = ""
+        actualizaciones["partidaId"] = ""
         actualizaciones["mazoRobar"] = emptyList<Carta>()
         actualizaciones["mazoDescarte"] = emptyList<Carta>()
         actualizaciones["timestampInicioContador"] = 0L
@@ -169,6 +174,7 @@ object FirebaseManager {
         actualizaciones["jugadaActual"] = mapOf<String, Any>()
         actualizaciones["swapAnimando"] = mapOf<String, Any>()
         actualizaciones["cambioPropioAnimando"] = null
+        actualizaciones["descarteEspontaneoAnimando"] = mapOf<String, Any>()
         actualizaciones["cadenaDescarte"] = mapOf<String, Any>()
 
         // Estados nuevos si existen en tu modelo.
@@ -211,23 +217,35 @@ object FirebaseManager {
         salaId: String,
         jugadorId: String
     ) {
-        val jugadorRef = salasRef
-            .child(salaId)
-            .child("jugadores")
-            .child(jugadorId)
+        if (salaId.isBlank() || jugadorId.isBlank()) return
+
+        val salaRef = salasRef.child(salaId)
+        val jugadorRef = salaRef.child("jugadores").child(jugadorId)
 
         connectedRef.addValueEventListener(object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val conectado = snapshot.getValue(Boolean::class.java) ?: false
+                if (!conectado) return
 
-                if (conectado) {
+                salaRef.get().addOnSuccessListener { salaSnap ->
+                    val salaExiste = salaSnap.exists()
+                    val salaTieneNombre = salaSnap.child("nombreSala").exists()
+                    val salaTieneEstado = salaSnap.child("estaActiva").exists() ||
+                            salaSnap.child("estaEnJuego").exists()
+                    val jugadorExiste = salaSnap.child("jugadores").child(jugadorId).exists()
+
+                    // Blindaje clave:
+                    // si la sala no existe o es un nodo incompleto,
+                    // NO escribimos presencia porque eso crea salas fantasma.
+                    if (!salaExiste || !salaTieneNombre || !salaTieneEstado || !jugadorExiste) {
+                        return@addOnSuccessListener
+                    }
+
                     val desconexion = mapOf<String, Any>(
                         "conectado" to false,
                         "ultimaConexion" to System.currentTimeMillis()
                     )
 
-                    // Al perder conexión NO borramos al jugador.
-                    // Solo lo marcamos como desconectado para permitir reingreso.
                     jugadorRef.onDisconnect().updateChildren(desconexion)
 
                     jugadorRef.updateChildren(
@@ -267,25 +285,59 @@ object FirebaseManager {
     fun obtenerSalasActivas(onUpdate: (List<Sala>) -> Unit): ValueEventListener {
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
-                val salasVisibles = snapshot.children.mapNotNull { salaSnap ->
-                    val sala = salaSnap.getValue(Sala::class.java) ?: return@mapNotNull null
+                val updates = mutableMapOf<String, Any?>()
 
-                    val hayJugadoresConectados = sala.jugadores.values.any { it.conectado }
+                val salasVisibles = snapshot.children.mapNotNull { salaSnap ->
+                    val salaKey = salaSnap.key ?: return@mapNotNull null
+                    val sala = salaSnap.getValue(Sala::class.java)
+
+                    val tieneNombreSala = salaSnap.child("nombreSala").exists()
+                    val tieneEstadoSala = salaSnap.child("estaActiva").exists() ||
+                            salaSnap.child("estaEnJuego").exists()
+
+                    val jugadoresSnap = salaSnap.child("jugadores")
+                    val jugadores = jugadoresSnap.children.toList()
+
+                    val esNodoFantasma =
+                        !tieneNombreSala ||
+                                !tieneEstadoSala ||
+                                jugadores.isEmpty() ||
+                                jugadores.all { jugadorSnap ->
+                                    !jugadorSnap.child("nombre").exists()
+                                }
+
+                    if (esNodoFantasma) {
+                        updates[salaKey] = null
+                        return@mapNotNull null
+                    }
+
+                    if (sala == null) {
+                        updates[salaKey] = null
+                        return@mapNotNull null
+                    }
+
+                    val jugadoresValidos = sala.jugadores.values.filter { jugador ->
+                        jugador.id.isNotBlank() && jugador.nombre.isNotBlank()
+                    }
+
+                    val hayJugadoresConectados = jugadoresValidos.any { it.conectado }
 
                     when {
-                        // Lobby vacío o sin conectados: sala fantasma.
                         sala.estaActiva && !sala.estaEnJuego && !hayJugadoresConectados -> {
-                            salasRef.child(sala.id).removeValue()
+                            updates[salaKey] = null
                             null
                         }
 
-                        // Mostrar únicamente mesas disponibles para entrar.
                         sala.estaActiva && !sala.estaEnJuego && hayJugadoresConectados -> {
                             sala
                         }
 
                         else -> null
                     }
+                }
+
+                if (updates.isNotEmpty()) {
+                    salasRef.updateChildren(updates)
                 }
 
                 onUpdate(salasVisibles)
@@ -381,25 +433,51 @@ object FirebaseManager {
     }
 
     fun unirseASala(salaId: String, jugador: Jugador, onComplete: (Boolean) -> Unit) {
-        val jugadorConectado = jugador.copy(
-            conectado = true,
-            ultimaConexion = System.currentTimeMillis()
-        )
+        if (salaId.isBlank() || jugador.id.isBlank() || jugador.nombre.isBlank()) {
+            onComplete(false)
+            return
+        }
 
-        salasRef.child(salaId)
-            .child("jugadores")
-            .child(jugador.id)
-            .setValue(jugadorConectado)
-            .addOnCompleteListener { task ->
-                if (task.isSuccessful) {
-                    registrarPresenciaJugador(
-                        salaId = salaId,
-                        jugadorId = jugador.id
-                    )
-                }
+        val salaRef = salasRef.child(salaId)
 
-                onComplete(task.isSuccessful)
+        salaRef.get().addOnSuccessListener { salaSnap ->
+            val sala = salaSnap.getValue(Sala::class.java)
+
+            val salaValida =
+                salaSnap.exists() &&
+                        salaSnap.child("nombreSala").exists() &&
+                        sala != null &&
+                        sala.estaActiva &&
+                        !sala.estaEnJuego &&
+                        sala.jugadores.size < 6
+
+            if (!salaValida) {
+                onComplete(false)
+                return@addOnSuccessListener
             }
+
+            val jugadorConectado = jugador.copy(
+                conectado = true,
+                ultimaConexion = System.currentTimeMillis()
+            )
+
+            salaRef
+                .child("jugadores")
+                .child(jugador.id)
+                .setValue(jugadorConectado)
+                .addOnCompleteListener { task ->
+                    if (task.isSuccessful) {
+                        registrarPresenciaJugador(
+                            salaId = salaId,
+                            jugadorId = jugador.id
+                        )
+                    }
+
+                    onComplete(task.isSuccessful)
+                }
+        }.addOnFailureListener {
+            onComplete(false)
+        }
     }
 
     // ─────────────────────────────────────────

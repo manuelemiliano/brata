@@ -19,6 +19,7 @@ import com.aguado.bratagame.VoyPendiente
 import com.google.firebase.database.Transaction
 import com.google.firebase.database.MutableData
 import com.google.firebase.database.DatabaseError
+import com.aguado.bratagame.DescarteEspontaneoAnimando
 
 // ─────────────────────────────────────────────
 // GAME ACTIONS
@@ -85,6 +86,15 @@ object GameActions {
             .setValue(mapOf<String, Any>())
     }
 
+    fun limpiarAnimacionDescarteEspontaneo(
+        salaId: String
+    ) {
+        val updates = mutableMapOf<String, Any?>()
+        updates["descarteEspontaneoAnimando"] = mapOf<String, Any>()
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
     // ─────────────────────────────────────────
     // ROBAR DEL POZO
     // El jugador toma la carta superior del mazoRobar.
@@ -106,7 +116,7 @@ object GameActions {
             return
         }
 
-        val cartaRobada = mazo.removeAt(0).limpiarMetaDescarteRobo()
+        val cartaRobada = mazo.removeAt(0).paraManoTrasRobarDelPozo()
         val updates = mutableMapOf<String, Any?>()
 
         // Quitar carta del pozo
@@ -195,7 +205,8 @@ object GameActions {
             cartaEnMano.copy(
                 descartadaPorJugadorId = jugadorId,
                 descartadaDesdeJuegoMesa = false,
-                comodinRobadoDelDescarteValido = false
+                comodinRobadoDelDescarteValido = false,
+                origenRobo = ""
             )
         )
 
@@ -248,7 +259,7 @@ object GameActions {
         }
 
         val cartaDesplazada = cartasActuales[posicionDestino]
-        cartasActuales[posicionDestino] = cartaEnMano
+        cartasActuales[posicionDestino] = cartaEnMano.limpiarMetaDescarteRobo()
 
         val descarte = sala.mazoDescarte.toMutableList()
         if (!cartaDesplazada.esSlotVacio()) {
@@ -354,7 +365,8 @@ object GameActions {
             cartaEnMano.copy(
                 descartadaPorJugadorId = jugadorId,
                 descartadaDesdeJuegoMesa = false,
-                comodinRobadoDelDescarteValido = false
+                comodinRobadoDelDescarteValido = false,
+                origenRobo = ""
             )
         )
 
@@ -454,7 +466,8 @@ object GameActions {
             cartaEnMano.copy(
                 descartadaPorJugadorId = jugadorId,
                 descartadaDesdeJuegoMesa = false,
-                comodinRobadoDelDescarteValido = false
+                comodinRobadoDelDescarteValido = false,
+                origenRobo = ""
             )
         )
 
@@ -683,7 +696,8 @@ object GameActions {
             cartaEnMano.copy(
                 descartadaPorJugadorId = jugadorId,
                 descartadaDesdeJuegoMesa = false,
-                comodinRobadoDelDescarteValido = false
+                comodinRobadoDelDescarteValido = false,
+                origenRobo = ""
             )
         )
 
@@ -758,7 +772,8 @@ object GameActions {
             cartaEnMano.copy(
                 descartadaPorJugadorId = jugadorId,
                 descartadaDesdeJuegoMesa = false,
-                comodinRobadoDelDescarteValido = false
+                comodinRobadoDelDescarteValido = false,
+                origenRobo = ""
             )
         )
 
@@ -943,45 +958,48 @@ object GameActions {
         cartasActualizadas[posicionCarta] = MesaSlots.VACIA
 
         val descarte = sala.mazoDescarte.toMutableList()
-        descarte.add(
-            cartaADescartar.copy(
-                descartadaPorJugadorId = jugadorId,
-                descartadaDesdeJuegoMesa = true,
-                comodinRobadoDelDescarteValido = false
-            )
+
+// Este es el índice real donde entra la carta.
+// Si después otro jugador descarta encima, esta carta queda debajo,
+// pero conserva su lugar correcto.
+        val indiceDescarteInsertado = descarte.size
+
+        val cartaDescartada = cartaADescartar.copy(
+            descartadaPorJugadorId = jugadorId,
+            descartadaDesdeJuegoMesa = true,
+            comodinRobadoDelDescarteValido = false
         )
 
+        descarte.add(cartaDescartada)
+
+        val animId = java.util.UUID.randomUUID().toString()
+        val ahora = System.currentTimeMillis()
+
         val updates = mutableMapOf<String, Any?>()
+
         updates["jugadores/$jugadorId/cartas"] = cartasActualizadas
         updates["mazoDescarte"] = descarte
 
-        val adelantadoDetectado = detectarAdelantadoDuranteEspiaPendiente(
-            sala = sala,
-            jugadorQueDescartaId = jugadorId,
-            cartaDescartada = cartaADescartar,
-            posicionDescartada = posicionCarta
+        updates["descarteEspontaneoAnimando"] = DescarteEspontaneoAnimando(
+            id = animId,
+            ejecutorId = jugadorId,
+            jugadorId = jugadorId,
+            posicion = posicionCarta,
+            cartaId = cartaADescartar.id,
+            valor = cartaADescartar.valor,
+            palo = cartaADescartar.palo,
+            indiceDescarte = indiceDescarteInsertado,
+            timestampInicio = ahora,
+            duracionViajeMs = 650L,
+            duracionReboteMs = 450L
         )
 
-        if (adelantadoDetectado != null) {
-            updates["adelantadoPendiente"] = adelantadoDetectado
-            updates["jugadaActual"] = mapOf(
-                "jugadorId" to adelantadoDetectado.jugadorPerjudicadoId,
-                "tipo" to "ADELANTADO_ESPIA",
-                "subaccion" to "Puede robar descarte",
-                "timestamp" to System.currentTimeMillis()
-            )
-
-            // Importante:
-            // El adelantado se permite, pero NO consume turno
-            // ni resuelve cadena de descarte.
-        } else {
-            aplicarDescarteEspontaneoConPoliticaDeCadena(
-                updates = updates,
-                sala = sala,
-                jugadorId = jugadorId,
-                valorDescartado = cartaADescartar.valor
-            )
-        }
+        aplicarDescarteEspontaneoConPoliticaDeCadena(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            valorDescartado = cartaADescartar.valor
+        )
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -1357,6 +1375,7 @@ object GameActions {
             activo = true,
             id = "voy_${System.currentTimeMillis()}_${jugadorId}",
             jugadorRobandoId = jugadorId,
+            tipoRobo = VOY_TIPO_ROBO_POZO,
             valorObjetivo = cimaDescarte.valor,
             cartaDescarteObjetivoId = cimaDescarte.id,
             timestampInicio = System.currentTimeMillis(),
@@ -1371,6 +1390,67 @@ object GameActions {
             "jugadorId" to jugadorId,
             "tipo" to "VOY",
             "subaccion" to "Intentando robar · oportunidad VOY",
+            "timestamp" to System.currentTimeMillis()
+        )
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
+    fun solicitarRoboDelDescarteConVoy(
+        salaId: String,
+        jugadorId: String,
+        sala: Sala,
+        onError: (String) -> Unit = {}
+    ) {
+        val jugador = sala.jugadores[jugadorId] ?: run {
+            onError("Jugador no encontrado")
+            return
+        }
+
+        if (jugador.descalificado) {
+            onError("Jugador descalificado")
+            return
+        }
+
+        if (sala.turnoActualId != jugadorId) {
+            onError("No es tu turno")
+            return
+        }
+
+        if (jugador.cartaEnMano != null) {
+            onError("Ya tienes una carta en mano")
+            return
+        }
+
+        if (sala.voyPendiente?.activo == true) {
+            onError("Hay una regla VOY pendiente")
+            return
+        }
+
+        val cimaDescarte = sala.mazoDescarte.lastOrNull() ?: run {
+            onError("No hay carta en el descarte")
+            return
+        }
+
+        val voy = VoyPendiente(
+            activo = true,
+            id = "voy_${System.currentTimeMillis()}_${jugadorId}",
+            jugadorRobandoId = jugadorId,
+            tipoRobo = VOY_TIPO_ROBO_DESCARTE,
+            valorObjetivo = cimaDescarte.valor,
+            cartaDescarteObjetivoId = cimaDescarte.id,
+            timestampInicio = System.currentTimeMillis(),
+            duracionMs = VOY_DURACION_MS,
+            reclamadoPorJugadorId = "",
+            fase = VOY_FASE_VENTANA
+        )
+
+        val updates = mutableMapOf<String, Any?>()
+        updates["voyPendiente"] = voy
+        updates["jugadaActual"] = mapOf(
+            "jugadorId" to jugadorId,
+            "tipo" to "VOY",
+            "subaccion" to "Intentando robar descarte · oportunidad VOY",
             "timestamp" to System.currentTimeMillis()
         )
 
@@ -1398,13 +1478,15 @@ object GameActions {
         if (!vencida) return
 
         val updates = mutableMapOf<String, Any?>()
-        val mazo = sala.mazoRobar.toMutableList()
+        val mazoRobar = sala.mazoRobar.toMutableList()
+        val mazoDescarte = sala.mazoDescarte.toMutableList()
 
-        val roboOk = agregarRoboDelPozoAUpdates(
+        val roboOk = agregarRoboOriginalVoyAUpdates(
             updates = updates,
             sala = sala,
-            jugadorRobandoId = jugadorId,
-            mazoRobarMutable = mazo,
+            voy = voy,
+            mazoRobarMutable = mazoRobar,
+            mazoDescarteMutable = mazoDescarte,
             onError = onError
         )
 
@@ -1486,7 +1568,7 @@ object GameActions {
                         mapOf(
                             "jugadorId" to jugadorId,
                             "tipo" to "VOY",
-                            "subaccion" to "Seleccionando carta objetivo",
+                            "subaccion" to "oprimió VOY · seleccionando una carta",
                             "timestamp" to System.currentTimeMillis()
                         )
                     )
@@ -1527,11 +1609,6 @@ object GameActions {
             return
         }
 
-        if (propietarioObjetivoId == voy.jugadorRobandoId) {
-            onError("No puedes seleccionar carta del jugador que iba a robar")
-            return
-        }
-
         if (posicionObjetivo !in 0..3) {
             onError("Posición inválida")
             return
@@ -1555,6 +1632,7 @@ object GameActions {
 
         val updates = mutableMapOf<String, Any?>()
         val mazoRobarMutable = sala.mazoRobar.toMutableList()
+        val mazoDescarteMutable = sala.mazoDescarte.toMutableList()
 
         val coincide = cartaSeleccionada.valor == voy.valorObjetivo
 
@@ -1567,11 +1645,12 @@ object GameActions {
                 onError = onError
             )
 
-            val roboOk = agregarRoboDelPozoAUpdates(
+            val roboOk = agregarRoboOriginalVoyAUpdates(
                 updates = updates,
                 sala = sala,
-                jugadorRobandoId = voy.jugadorRobandoId,
+                voy = voy,
                 mazoRobarMutable = mazoRobarMutable,
+                mazoDescarteMutable = mazoDescarteMutable,
                 onError = onError
             )
 
@@ -1610,7 +1689,7 @@ object GameActions {
         updates["jugadaActual"] = mapOf(
             "jugadorId" to jugadorId,
             "tipo" to "VOY",
-            "subaccion" to "Acertó · seleccionando carta propia para entregar",
+            "subaccion" to "seleccionando una carta propia para entregar",
             "timestamp" to System.currentTimeMillis()
         )
 
@@ -1681,12 +1760,14 @@ object GameActions {
 
         val updates = mutableMapOf<String, Any?>()
         val mazoRobarMutable = sala.mazoRobar.toMutableList()
+        val mazoDescarteMutable = sala.mazoDescarte.toMutableList()
 
-        val roboOk = agregarRoboDelPozoAUpdates(
+        val roboOk = agregarRoboOriginalVoyAUpdates(
             updates = updates,
             sala = sala,
-            jugadorRobandoId = voy.jugadorRobandoId,
+            voy = voy,
             mazoRobarMutable = mazoRobarMutable,
+            mazoDescarteMutable = mazoDescarteMutable,
             onError = onError
         )
 
@@ -1710,6 +1791,9 @@ object GameActions {
     private const val VOY_FASE_SELECCIONANDO_OBJETIVO = "SELECCIONANDO_OBJETIVO"
     private const val VOY_FASE_SELECCIONANDO_ENTREGA = "SELECCIONANDO_ENTREGA"
     private const val VOY_DURACION_MS = 2000L
+
+    private const val VOY_TIPO_ROBO_POZO = "POZO"
+    private const val VOY_TIPO_ROBO_DESCARTE = "DESCARTE"
 
     private fun jugadorTieneCartaParaEntregar(jugador: Jugador): Boolean {
         return jugador.cartas
@@ -1746,8 +1830,7 @@ object GameActions {
 
         val cartaRobada = mazoRobarMutable
             .removeAt(0)
-            .limpiarMetaDescarteRobo()
-            .copy(abierta = true)
+            .paraManoTrasRobarDelPozo()
 
         updates["mazoRobar"] = mazoRobarMutable
         updates["jugadores/$jugadorRobandoId/cartaEnMano"] = cartaRobada
@@ -1759,6 +1842,80 @@ object GameActions {
         )
 
         return true
+    }
+
+    private fun agregarRoboDelDescarteAUpdates(
+        updates: MutableMap<String, Any?>,
+        sala: Sala,
+        jugadorRobandoId: String,
+        mazoDescarteMutable: MutableList<Carta>,
+        onError: (String) -> Unit = {}
+    ): Boolean {
+        val jugador = sala.jugadores[jugadorRobandoId] ?: run {
+            onError("Jugador que iba a robar no encontrado")
+            return false
+        }
+
+        if (jugador.descalificado) {
+            onError("El jugador que iba a robar está descalificado")
+            return false
+        }
+
+        if (jugador.cartaEnMano != null) {
+            onError("El jugador ya tiene una carta en mano")
+            return false
+        }
+
+        if (mazoDescarteMutable.isEmpty()) {
+            onError("El pozo de descarte está vacío")
+            return false
+        }
+
+        val cartaRobada = mazoDescarteMutable
+            .removeAt(mazoDescarteMutable.lastIndex)
+            .paraManoTrasRobarDelDescarte()
+
+        updates["mazoDescarte"] = mazoDescarteMutable
+        updates["jugadores/$jugadorRobandoId/cartaEnMano"] = cartaRobada
+
+        romperCadenaSiJugadorEsperado(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorRobandoId
+        )
+
+        return true
+    }
+
+    private fun agregarRoboOriginalVoyAUpdates(
+        updates: MutableMap<String, Any?>,
+        sala: Sala,
+        voy: VoyPendiente,
+        mazoRobarMutable: MutableList<Carta>,
+        mazoDescarteMutable: MutableList<Carta>,
+        onError: (String) -> Unit = {}
+    ): Boolean {
+        return when (voy.tipoRobo) {
+            VOY_TIPO_ROBO_DESCARTE -> {
+                agregarRoboDelDescarteAUpdates(
+                    updates = updates,
+                    sala = sala,
+                    jugadorRobandoId = voy.jugadorRobandoId,
+                    mazoDescarteMutable = mazoDescarteMutable,
+                    onError = onError
+                )
+            }
+
+            else -> {
+                agregarRoboDelPozoAUpdates(
+                    updates = updates,
+                    sala = sala,
+                    jugadorRobandoId = voy.jugadorRobandoId,
+                    mazoRobarMutable = mazoRobarMutable,
+                    onError = onError
+                )
+            }
+        }
     }
 
     private fun aplicarCastigoOErrorEnUpdates(
@@ -2351,12 +2508,21 @@ private fun Carta.limpiarMetaDescarteRobo(): Carta =
     copy(
         descartadaPorJugadorId = "",
         descartadaDesdeJuegoMesa = false,
-        comodinRobadoDelDescarteValido = false
+        comodinRobadoDelDescarteValido = false,
+        origenRobo = ""
+    )
+
+private fun Carta.paraManoTrasRobarDelPozo(): Carta =
+    limpiarMetaDescarteRobo().copy(
+        abierta = true,
+        origenRobo = "POZO"
     )
 
 private fun Carta.paraManoTrasRobarDelDescarte(): Carta =
     copy(
         descartadaPorJugadorId = "",
         descartadaDesdeJuegoMesa = false,
-        comodinRobadoDelDescarteValido = valor == "JKR"
+        comodinRobadoDelDescarteValido = valor == "JKR",
+        abierta = true,
+        origenRobo = "DESCARTE"
     )

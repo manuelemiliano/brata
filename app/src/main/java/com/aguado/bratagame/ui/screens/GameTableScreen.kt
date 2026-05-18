@@ -52,6 +52,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.ui.text.style.TextAlign
+import com.aguado.bratagame.DescarteEspontaneoAnimando
 
 @Composable
 fun GameTableScreen(
@@ -102,6 +103,11 @@ fun GameTableScreen(
     val soyJugadorQueVaARobarVoy =
         voyPendienteLocal?.jugadorRobandoId == jugadorLocal.id
 
+    val mostrarEsperaRoboVoy =
+        voyPendienteLocal != null &&
+                soyJugadorQueVaARobarVoy &&
+                voyPendienteLocal.fase == "VENTANA"
+
     val soyJugadorQueReclamoVoy =
         voyPendienteLocal?.reclamadoPorJugadorId == jugadorLocal.id
 
@@ -140,6 +146,18 @@ fun GameTableScreen(
     val estadoPoder = CardPowerResolver.calcularEstadoPoder(jugadorLocal.id, salaActual)
     val cimaDscarte = salaActual.mazoDescarte.lastOrNull()
     val context = LocalContext.current
+
+    val descarteEspontaneoFirebase = salaActual.descarteEspontaneoAnimando
+
+    LaunchedEffect(descarteEspontaneoFirebase?.id) {
+        val anim = descarteEspontaneoFirebase ?: return@LaunchedEffect
+
+        if (anim.ejecutorId != jugadorLocal.id) return@LaunchedEffect
+
+        delay(anim.duracionViajeMs + anim.duracionReboteMs + 350L)
+
+        GameActions.limpiarAnimacionDescarteEspontaneo(idSala)
+    }
 
     LaunchedEffect(voyPendienteLocal?.id, voyPendienteLocal?.fase) {
         val voy = voyPendienteLocal ?: return@LaunchedEffect
@@ -205,6 +223,7 @@ fun GameTableScreen(
     var espontaneoEnCurso by remember { mutableStateOf<CartaEnMesa?>(null) }
     val puedeClicEspontaneoMesa =
         !jugadorLocalDescalificado &&
+                salaActual.voyPendiente?.activo != true &&
                 CardPowerResolver.puedeIniciarDescarteEspontaneoDesdeMesa(
                     sala = salaActual,
                     estadoPoder = estadoPoder,
@@ -284,6 +303,10 @@ fun GameTableScreen(
         mutableStateOf<Offset?>(null)
     }
 
+    var centroPenultimaDescarteEnRaiz by remember {
+        mutableStateOf<Offset?>(null)
+    }
+
     val cartaSwapA = salaActual.swapAnimando?.let { swap ->
         GameActions.resolverCartaEnMesaPorId(
             sala = salaActual,
@@ -355,10 +378,10 @@ fun GameTableScreen(
                         cartasAlejadasVisibles = false,
                         casillasOcultasAnimacion = casillasOcultasSwap,
 
-                        habilitarSeleccionVoyObjetivo = seleccionVoyObjetivoActiva &&
-                                voyPendienteLocal?.reclamadoPorJugadorId == jugadorLocal.id &&
-                                oponente.id != jugadorLocal.id &&
-                                oponente.id != voyPendienteLocal?.jugadorRobandoId,
+                        habilitarSeleccionVoyObjetivo =
+                            seleccionVoyObjetivoActiva &&
+                                    voyPendienteLocal?.reclamadoPorJugadorId == jugadorLocal.id,
+
                         onSeleccionVoyObjetivo = { cartaObjetivo ->
                             GameActions.seleccionarCartaObjetivoVoy(
                                 salaId = idSala,
@@ -472,6 +495,17 @@ fun GameTableScreen(
                         salaActual.cambioPropioAnimando == null &&
                         !estadoPoder.hayPoderActivo
 
+            val mostrarVoyLocal =
+                puedoPresionarVoy &&
+                        !seleccionCambioPropioActiva &&
+                        !seleccionCartaParaEspiadoActiva &&
+                        !seleccionCartaParaAdelantadoActiva &&
+                        !seleccionVoyObjetivoActiva &&
+                        !seleccionVoyEntregaActiva &&
+                        yo.cartaEnMano == null &&
+                        !estadoPoder.hayPoderActivo &&
+                        salaActual.cambioPropioAnimando == null
+
             // 2. Jugador local
             Box(
                 modifier = Modifier.fillMaxSize().padding(bottom = 40.dp),
@@ -488,6 +522,28 @@ fun GameTableScreen(
                             salaActual.brataJugadorId == yo.id,
                     mostrarBotonBrata = mostrarBrataLocal,
                     mostrarBotonPaso = mostrarPasoLocal,
+                    mostrarBotonVoy = mostrarVoyLocal,
+                    onVoyClick = {
+                        GameActions.marcarJugadaActual(
+                            salaId = idSala,
+                            jugadorId = jugadorLocal.id,
+                            tipo = "VOY",
+                            subaccion = "oprimió VOY · seleccionando una carta"
+                        )
+
+                        GameActions.reclamarVoy(
+                            salaId = idSala,
+                            jugadorId = jugadorLocal.id,
+                            sala = salaActual
+                        ) { ok, msg ->
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+
+                            if (ok) {
+                                seleccionVoyObjetivoActiva = true
+                                seleccionVoyEntregaActiva = false
+                            }
+                        }
+                    },
                     onPasoClick = {
                         GameActions.pasarTurnoBrata(
                             salaId = idSala,
@@ -612,6 +668,12 @@ fun GameTableScreen(
                     onDescarteEspontaneo = onDescarte@{ ce ->
                         if (espontaneoEnCurso != null) return@onDescarte
 
+                        // Congelamos el centro del slot antes de que Firebase quite la carta.
+                        mesaLayout.freezeCentersForSwap(
+                            MesaCardKey(ce.propietarioId, ce.posicion),
+                            MesaCardKey(ce.propietarioId, ce.posicion)
+                        )
+
                         val salaClick = datosSala ?: return@onDescarte
                         val jugadorClick = salaClick.jugadores[jugadorLocal.id] ?: return@onDescarte
 
@@ -729,10 +791,15 @@ fun GameTableScreen(
                 MazosCentralesInteractivos(
                     esHorizontal = esHoriz,
                     cartasDescarteVisibles = ultimasDosDescarte,
+
                     puedeRobarDelPozo = !jugadorLocalDescalificado &&
                             estadoTurno.puedeRobar &&
                             voyPendienteLocal == null,
-                    puedeRobarDelDescarte = !jugadorLocalDescalificado && estadoTurno.puedeRobarDelDescarte,
+
+                    puedeRobarDelDescarte = !jugadorLocalDescalificado &&
+                            estadoTurno.puedeRobarDelDescarte &&
+                            voyPendienteLocal == null,
+
                     onRobarPozo = {
                         GameActions.solicitarRoboDelPozoConVoy(
                             salaId = idSala,
@@ -742,49 +809,22 @@ fun GameTableScreen(
                             Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                         }
                     },
-                    onRobarDescarte = { GameActions.robarDelDescarte(idSala, jugadorLocal.id, salaActual) },
+                    onRobarDescarte = {
+                        GameActions.solicitarRoboDelDescarteConVoy(
+                            salaId = idSala,
+                            jugadorId = jugadorLocal.id,
+                            sala = salaActual
+                        ) { msg ->
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        }
+                    },
                     onCentroDescarteMedido = { centro ->
                         centroDescarteEnRaiz = centro
+                    },
+                    onCentroPenultimaDescarteMedido = { centro ->
+                        centroPenultimaDescarteEnRaiz = centro
                     }
                 )
-            }
-
-            if (puedoPresionarVoy) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(bottom = 118.dp),
-                    contentAlignment = Alignment.BottomCenter
-                ) {
-                    Button(
-                        onClick = {
-                            GameActions.reclamarVoy(
-                                salaId = idSala,
-                                jugadorId = jugadorLocal.id,
-                                sala = salaActual
-                            ) { ok, msg ->
-                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-
-                                if (ok) {
-                                    seleccionVoyObjetivoActiva = true
-                                    seleccionVoyEntregaActiva = false
-                                }
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF8A6D1D),
-                            contentColor = Color.White
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text(
-                            text = "VOY",
-                            color = Color.White,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 16.sp
-                        )
-                    }
-                }
             }
 
             // El indicador de turno ahora se muestra junto al área del jugador local,
@@ -800,6 +840,26 @@ fun GameTableScreen(
             }
 
             if (
+                mostrarEsperaRoboVoy &&
+                !esObservador
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = 160.dp),
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    PanelEsperaRoboVoy(
+                        texto = if (voyPendienteLocal?.tipoRobo == "DESCARTE") {
+                            "Robando descarte..."
+                        } else {
+                            "Robando carta..."
+                        }
+                    )
+                }
+            }
+
+            if (
                 cartaEnMano != null &&
                 !jugadorLocalDescalificado &&
                 !esObservador &&
@@ -810,6 +870,7 @@ fun GameTableScreen(
                 !seleccionVoyObjetivoActiva &&
                 !seleccionVoyEntregaActiva &&
                 voyPendienteLocal == null &&
+                !mostrarEsperaRoboVoy &&
                 salaActual.cambioPropioAnimando == null
             ) {
                 val ultimaDescarte = salaActual.mazoDescarte.lastOrNull()
@@ -825,7 +886,8 @@ fun GameTableScreen(
                         cartaEnMano = cartaEnMano,
                         ultimaCartaDescarte = ultimaDescarte,
                         segundaCartaDescarte = segundaDescarte,
-                        esComodinPropio = esComodinPropio
+                        esComodinPropio = esComodinPropio,
+                        permitirDescarteFree = cartaEnMano.origenRobo == "POZO"
                     )
                 }
 
@@ -1179,6 +1241,42 @@ fun GameTableScreen(
                     )
                 }
             }
+
+            val animDescarteEspontaneo = salaActual.descarteEspontaneoAnimando
+
+            if (animDescarteEspontaneo != null) {
+                val indiceActual = salaActual.mazoDescarte.indexOfFirst {
+                    it.id == animDescarteEspontaneo.cartaId
+                }
+
+                val lastIndex = salaActual.mazoDescarte.lastIndex
+
+                val destinoVisual = when {
+                    indiceActual == lastIndex && centroDescarteEnRaiz != null -> {
+                        centroDescarteEnRaiz
+                    }
+
+                    indiceActual == lastIndex - 1 && centroPenultimaDescarteEnRaiz != null -> {
+                        centroPenultimaDescarteEnRaiz
+                    }
+
+                    else -> {
+                        centroDescarteEnRaiz
+                    }
+                }
+
+                val estaVisibleEnDescarte =
+                    indiceActual == lastIndex || indiceActual == lastIndex - 1
+
+                if (destinoVisual != null) {
+                    CartaDescarteEspontaneoHaciaPozoAnimation(
+                        animacion = animDescarteEspontaneo,
+                        destinoCentroEnRaiz = destinoVisual,
+                        visibleEnPozo = estaVisibleEnDescarte
+                    )
+                }
+            }
+
             // 9. Botón salir
             IconButton(
                 onClick = onSalir,
@@ -1218,6 +1316,60 @@ fun GameTableScreen(
     }
 }
 
+
+@Composable
+private fun PanelEsperaRoboVoy(
+    texto: String,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .width(150.dp)
+            .height(120.dp)
+            .background(
+                color = Color(0xFF123515).copy(alpha = 0.96f),
+                shape = RoundedCornerShape(14.dp)
+            )
+            .border(
+                width = 1.dp,
+                color = Color(0xFF456B03),
+                shape = RoundedCornerShape(14.dp)
+            )
+            .padding(12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(34.dp),
+                color = CasinoGold,
+                strokeWidth = 3.dp
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Text(
+                text = texto,
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = "Oportunidad VOY",
+                color = CasinoGold,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
 
 @Composable
 private fun IndicadorErroresDescarte(
@@ -1298,6 +1450,7 @@ fun AreaJugador(
     esJugadorQuePresionoBrata: Boolean = false,
     mostrarBotonBrata: Boolean = false,
     mostrarBotonPaso: Boolean = false,
+    mostrarBotonVoy: Boolean = false,
     textoInformativoMesa: String = "",
     brataActivada: Boolean = false,
     estadoPoder: CardPowerResolver.EstadoPoder,
@@ -1327,6 +1480,7 @@ fun AreaJugador(
     onDescarteEspontaneo: ((CartaEnMesa) -> Unit)? = null,
     onBrataClick: () -> Unit = {},
     onPasoClick: () -> Unit = {},
+    onVoyClick: () -> Unit = {},
     onCartaTocada: (CartaEnMesa) -> Unit = {}
 ) {
     // Notificar la rotación del área al holder para que CardSwapAnimation
@@ -1409,6 +1563,28 @@ fun AreaJugador(
                 }
 
                 when {
+                    mostrarBotonVoy -> {
+                        Button(
+                            onClick = onVoyClick,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF8A6D1D)
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .offset(x = 36.dp)
+                                .size(width = 92.dp, height = 44.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text(
+                                "VOY",
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Black
+                            )
+                        }
+                    }
+
                     mostrarBotonBrata -> {
                         Button(
                             onClick = onBrataClick,
@@ -1880,7 +2056,8 @@ fun MazosCentralesInteractivos(
     puedeRobarDelDescarte: Boolean,
     onRobarPozo: () -> Unit,
     onRobarDescarte: () -> Unit,
-    onCentroDescarteMedido: (Offset) -> Unit = {}
+    onCentroDescarteMedido: (Offset) -> Unit = {},
+    onCentroPenultimaDescarteMedido: (Offset) -> Unit = {}
 ) {
     val contenido = @Composable {
         Box(modifier = Modifier.then(if (puedeRobarDelPozo) Modifier.clickable { onRobarPozo() } else Modifier)) {
@@ -1922,6 +2099,9 @@ fun MazosCentralesInteractivos(
                     Box(
                         modifier = Modifier
                             .offset(x = 0.dp)
+                            .onGloballyPositioned { coords ->
+                                onCentroPenultimaDescarteMedido(coords.boundsInRoot().center)
+                            }
                     ) {
                         CartaVisual(
                             abierta = true,
@@ -2130,7 +2310,17 @@ private fun construirDetalleJugadaBanner(
         }
 
         "VOY" -> {
-            "$prefijo en regla VOY · ${jugada.subaccion.ifBlank { "Resolviendo jugada" }}"
+            if (jugada.jugadorId == jugadorLocalId) {
+                "Oprimiste VOY · ${jugada.subaccion
+                    .replace("oprimió VOY ·", "")
+                    .trim()
+                    .ifBlank { "seleccionando una carta" }}"
+            } else {
+                "$nombreJugador oprimió VOY · ${jugada.subaccion
+                    .replace("oprimió VOY ·", "")
+                    .trim()
+                    .ifBlank { "seleccionando una carta" }}"
+            }
         }
 
         else -> ""
@@ -2292,6 +2482,123 @@ fun calcularPosicionJugadorMesa(index: Int, totalOponentes: Int): PosicionJugado
             alignment = Alignment.TopCenter,
             rotacion = 180f
         )
+    }
+}
+
+@Composable
+private fun CartaDescarteEspontaneoHaciaPozoAnimation(
+    animacion: DescarteEspontaneoAnimando,
+    destinoCentroEnRaiz: Offset,
+    visibleEnPozo: Boolean
+) {
+    val holder = LocalMesaCardPositions.current
+    val density = LocalDensity.current
+
+    val mediaCartaPx = remember(density) {
+        with(density) {
+            Offset(
+                x = 25.dp.toPx(),
+                y = 35.dp.toPx()
+            )
+        }
+    }
+
+    val key = remember(animacion.jugadorId, animacion.posicion) {
+        MesaCardKey(animacion.jugadorId, animacion.posicion)
+    }
+
+    var overlayOrigenEnRaiz by remember {
+        mutableStateOf<Offset?>(null)
+    }
+
+    val centroOrigen = holder?.frozenCenterOf(key) ?: holder?.centerOf(key)
+
+    var elapsedLocal by remember(animacion.id) {
+        mutableStateOf(0L)
+    }
+
+    LaunchedEffect(animacion.id) {
+        val inicioLocal = System.currentTimeMillis()
+        val total = animacion.duracionViajeMs + animacion.duracionReboteMs
+
+        while (elapsedLocal < total) {
+            elapsedLocal = System.currentTimeMillis() - inicioLocal
+            delay(16L)
+        }
+
+        elapsedLocal = total
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { coords ->
+                overlayOrigenEnRaiz = coords.positionInRoot()
+            }
+    ) {
+        val origen = centroOrigen
+        val overlay = overlayOrigenEnRaiz
+
+        if (origen != null && overlay != null) {
+            val elapsed = elapsedLocal.coerceAtLeast(0L)
+
+            val viajeProgress =
+                (elapsed.toFloat() / animacion.duracionViajeMs.toFloat())
+                    .coerceIn(0f, 1f)
+
+            val reboteProgress =
+                ((elapsed - animacion.duracionViajeMs).toFloat() / animacion.duracionReboteMs.toFloat())
+                    .coerceIn(0f, 1f)
+
+            val easingViaje = FastOutSlowInEasing.transform(viajeProgress)
+
+            val startX = origen.x - mediaCartaPx.x - overlay.x
+            val startY = origen.y - mediaCartaPx.y - overlay.y
+
+            val dx = destinoCentroEnRaiz.x - origen.x
+            val dy = destinoCentroEnRaiz.y - origen.y
+
+            val rebote = if (reboteProgress > 0f && visibleEnPozo) {
+                -10f * kotlin.math.sin(reboteProgress * Math.PI.toFloat() * 4f) *
+                        (1f - reboteProgress)
+            } else {
+                0f
+            }
+
+            val rotacionOrigen = holder?.rotationOf(animacion.jugadorId) ?: 0f
+            val rotacionDestino = 0f
+            val diferenciaRotacion =
+                ((rotacionDestino - rotacionOrigen + 540f) % 360f) - 180f
+            val rotacionActual =
+                rotacionOrigen + diferenciaRotacion * easingViaje
+
+            val alphaActual = when {
+                visibleEnPozo -> 1f
+                reboteProgress > 0f -> 1f - reboteProgress
+                else -> 1f
+            }
+
+            Box(
+                modifier = Modifier.graphicsLayer {
+                    translationX = startX + dx * easingViaje
+                    translationY = startY + dy * easingViaje + rebote
+
+                    scaleX = 1f - (0.08f * easingViaje)
+                    scaleY = 1f - (0.08f * easingViaje)
+
+                    rotationZ = rotacionActual
+                    alpha = alphaActual.coerceIn(0f, 1f)
+                    shadowElevation = 18f
+                }
+            ) {
+                CartaVisual(
+                    abierta = true,
+                    valor = animacion.valor,
+                    palo = mappingPalo(animacion.palo),
+                    modifier = Modifier.size(50.dp, 70.dp)
+                )
+            }
+        }
     }
 }
 

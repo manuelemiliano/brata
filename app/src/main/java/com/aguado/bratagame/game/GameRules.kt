@@ -58,7 +58,8 @@ object GameRules {
         cartaEnMano: Carta,
         ultimaCartaDescarte: Carta?,
         segundaCartaDescarte: Carta?,   // la que está debajo de la última
-        esComodinPropio: Boolean        // true si se robó del descarte siendo comodín
+        esComodinPropio: Boolean,       // true si se robó del descarte siendo comodín
+        permitirDescarteFree: Boolean = cartaEnMano.origenRobo == "POZO"
     ): List<AccionMano> {
 
         // Caso especial: COMODÍN robado del pozo normal
@@ -84,31 +85,35 @@ object GameRules {
         }
 
         // ── Regla de descarte free ──────────────
+        // Solo aplica cuando la carta fue robada del pozo oculto.
+        // No aplica cuando la carta fue robada del pozo de descarte.
+        if (permitirDescarteFree) {
 
-        // Caso 1: La carta robada es igual a la última del descarte
-        if (ultimaCartaDescarte != null &&
-            cartaEnMano.valor == ultimaCartaDescarte.valor) {
-            acciones.add(AccionMano.DESCARTAR_FREE)
-        }
-
-        // Caso 2: Hay dos cartas consecutivas en el descarte
-        // y la carta robada es consecutiva ascendente o descendente
-        if (ultimaCartaDescarte != null && segundaCartaDescarte != null) {
-            val valorUltima = valorNumerico(ultimaCartaDescarte.valor)
-            val valorSegunda = valorNumerico(segundaCartaDescarte.valor)
-            val valorRobada = valorNumerico(cartaEnMano.valor)
-
-            val descarteSonConsecutivos =
-                valorUltima != null && valorSegunda != null &&
-                        (valorUltima - valorSegunda == 1 || valorSegunda - valorUltima == 1)
-
-            val robadaEsConsecutiva =
-                valorRobada != null && valorUltima != null &&
-                        (valorRobada - valorUltima == 1 || valorUltima - valorRobada == 1)
-
-            if (descarteSonConsecutivos && robadaEsConsecutiva &&
-                !acciones.contains(AccionMano.DESCARTAR_FREE)) {
+            // Caso 1: La carta robada es igual a la última del descarte
+            if (ultimaCartaDescarte != null &&
+                cartaEnMano.valor == ultimaCartaDescarte.valor) {
                 acciones.add(AccionMano.DESCARTAR_FREE)
+            }
+
+            // Caso 2: Hay dos cartas consecutivas en el descarte
+            // y la carta robada es consecutiva ascendente o descendente
+            if (ultimaCartaDescarte != null && segundaCartaDescarte != null) {
+                val valorUltima = valorNumerico(ultimaCartaDescarte.valor)
+                val valorSegunda = valorNumerico(segundaCartaDescarte.valor)
+                val valorRobada = valorNumerico(cartaEnMano.valor)
+
+                val descarteSonConsecutivos =
+                    valorUltima != null && valorSegunda != null &&
+                            (valorUltima - valorSegunda == 1 || valorSegunda - valorUltima == 1)
+
+                val robadaEsConsecutiva =
+                    valorRobada != null && valorUltima != null &&
+                            (valorRobada - valorUltima == 1 || valorUltima - valorRobada == 1)
+
+                if (descarteSonConsecutivos && robadaEsConsecutiva &&
+                    !acciones.contains(AccionMano.DESCARTAR_FREE)) {
+                    acciones.add(AccionMano.DESCARTAR_FREE)
+                }
             }
         }
 

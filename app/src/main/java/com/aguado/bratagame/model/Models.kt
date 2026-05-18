@@ -14,18 +14,31 @@ data class Carta(
     @get:PropertyName("abierta")
     @set:PropertyName("abierta")
     var abierta: Boolean = false,
+
     /** Quien colocó esta carta como nueva cima del descarte (última acción sobre la pila). */
     @get:PropertyName("descartadaPorJugadorId")
     @set:PropertyName("descartadaPorJugadorId")
     var descartadaPorJugadorId: String = "",
+
     /** true = salió de las 4 del juego en mesa; false = desde la mano u otra acción. */
     @get:PropertyName("descartadaDesdeJuegoMesa")
     @set:PropertyName("descartadaDesdeJuegoMesa")
     var descartadaDesdeJuegoMesa: Boolean = false,
+
     /** Solo comodín: se robó legalmente del descarte (regla del jugador anterior + desde mesa). */
     @get:PropertyName("comodinRoboDescarteOk")
     @set:PropertyName("comodinRoboDescarteOk")
-    var comodinRobadoDelDescarteValido: Boolean = false
+    var comodinRobadoDelDescarteValido: Boolean = false,
+
+    /**
+     * Origen de la carta cuando está en mano.
+     * "POZO" = viene del pozo oculto.
+     * "DESCARTE" = viene del pozo de descarte.
+     * "" = no está en mano o no aplica.
+     */
+    @get:PropertyName("origenRobo")
+    @set:PropertyName("origenRobo")
+    var origenRobo: String = ""
 )
 
 /** Casilla sin carta: conserva el hueco 0–3 para memoria espacial. */
@@ -177,41 +190,39 @@ data class Sala(
 // Escrita por el jugador ejecutor; leída por todos los dispositivos.
     var cambioPropioAnimando: CambioPropioAnimando? = null,
 
+// Animación de descarte espontáneo hacia el pozo.
+// La carta ya fue jugada en Firebase; esto solo representa visualmente el movimiento.
+    var descarteEspontaneoAnimando: DescarteEspontaneoAnimando? = null,
+
     var cadenaDescarte: CadenaDescarte? = null,
 
     var adelantadoPendiente: AdelantadoPendiente? = null,
 
     // Regla VOY: ventana temporal antes del robo.
-    var voyPendiente: VoyPendiente? = null
+    var voyPendiente: VoyPendiente? = null,
+
+    var partidaId: String = ""
 )
 
 data class VoyPendiente(
     val activo: Boolean = false,
-
-    // Identidad única de esta ventana VOY.
     val id: String = "",
 
     // Jugador que intentó robar y cuyo robo queda pausado.
     val jugadorRobandoId: String = "",
 
+    // "POZO" o "DESCARTE"
+    val tipoRobo: String = "POZO",
+
     // Valor de la cima del descarte al momento de intentar robar.
     val valorObjetivo: String = "",
     val cartaDescarteObjetivoId: String = "",
 
-    // Control de ventana temporal.
     val timestampInicio: Long = 0L,
     val duracionMs: Long = 2000L,
-
-    // Primer jugador que presionó VOY.
     val reclamadoPorJugadorId: String = "",
-
-    // Fases:
-    // VENTANA
-    // SELECCIONANDO_OBJETIVO
-    // SELECCIONANDO_ENTREGA
     val fase: String = "VENTANA",
 
-    // Carta correcta seleccionada por quien dijo VOY.
     val jugadorObjetivoId: String = "",
     val posicionObjetivo: Int = -1,
     val cartaObjetivoId: String = ""
@@ -332,4 +343,24 @@ data class CambioPropioAnimando(
     val timestampInicio: Long = 0L,
     val duracionSaltoMs: Long = 2000L,
     val duracionViajeMs: Long = 750L
+)
+
+data class DescarteEspontaneoAnimando(
+    val id: String = "",
+    val ejecutorId: String = "",
+
+    // Carta que salió del juego de un jugador.
+    val jugadorId: String = "",
+    val posicion: Int = -1,
+    val cartaId: String = "",
+    val valor: String = "",
+    val palo: String = "",
+
+    // Lugar real donde entró en mazoDescarte al momento del clic.
+    val indiceDescarte: Int = -1,
+
+    // Sincronización visual.
+    val timestampInicio: Long = 0L,
+    val duracionViajeMs: Long = 650L,
+    val duracionReboteMs: Long = 450L
 )
