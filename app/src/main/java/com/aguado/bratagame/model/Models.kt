@@ -179,20 +179,26 @@ data class Sala(
     // null si no hay poder activo en este momento
     var cartaPoderActiva: CartaPoderActiva? = null,
 
-// Describe la jugada actual para que todos los jugadores sepan
-// qué acción está realizando el jugador en turno.
+    // Describe la jugada actual para que todos los jugadores sepan
+    // qué acción está realizando el jugador en turno.
     var jugadaActual: JugadaActual? = null,
 
-// Animación de intercambio en curso (null = sin animación activa)
+    // Animación de intercambio en curso (null = sin animación activa)
     var swapAnimando: SwapAnimando? = null,
 
-// Animación de cambio por carta propia hacia el descarte
-// Escrita por el jugador ejecutor; leída por todos los dispositivos.
+    // Animación de cambio por carta propia hacia el descarte
+    // Escrita por el jugador ejecutor; leída por todos los dispositivos.
     var cambioPropioAnimando: CambioPropioAnimando? = null,
 
-// Animación de descarte espontáneo hacia el pozo.
-// La carta ya fue jugada en Firebase; esto solo representa visualmente el movimiento.
+    // Animación de descarte espontáneo hacia el pozo.
+    // La carta ya fue jugada en Firebase; esto solo representa visualmente el movimiento.
     var descarteEspontaneoAnimando: DescarteEspontaneoAnimando? = null,
+
+    // Animación de DESCARTE FREE.
+    // La carta ya fue jugada en Firebase; esto solo representa visualmente el movimiento.
+    var descarteFreeAnimando: DescarteFreeAnimando? = null,
+
+    var espiaAnimando: EspiaAnimando? = null,
 
     var cadenaDescarte: CadenaDescarte? = null,
 
@@ -357,6 +363,38 @@ data class DescarteEspontaneoAnimando(
     val palo: String = "",
 
     // Lugar real donde entró en mazoDescarte al momento del clic.
+    val indiceDescarte: Int = -1,
+
+    // Sincronización visual.
+    val timestampInicio: Long = 0L,
+    val duracionViajeMs: Long = 650L,
+    val duracionReboteMs: Long = 450L
+)
+
+data class EspiaAnimando(
+    val id: String = "",
+    val ejecutorId: String = "",
+
+    // Carta que fue seleccionada para espiar.
+    val propietarioId: String = "",
+    val posicion: Int = -1,
+    val cartaId: String = "",
+
+    // Sincronización visual.
+    val timestampInicio: Long = 0L,
+    val duracionMs: Long = 3000L
+)
+
+data class DescarteFreeAnimando(
+    val id: String = "",
+    val ejecutorId: String = "",
+
+    // Carta que estaba en mano y fue enviada al descarte.
+    val cartaId: String = "",
+    val valor: String = "",
+    val palo: String = "",
+
+    // Lugar real donde entró en mazoDescarte.
     val indiceDescarte: Int = -1,
 
     // Sincronización visual.

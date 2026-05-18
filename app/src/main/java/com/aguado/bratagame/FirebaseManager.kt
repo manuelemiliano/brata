@@ -108,6 +108,9 @@ object FirebaseManager {
         actualizaciones["jugadaActual"] = mapOf<String, Any>()
         actualizaciones["swapAnimando"] = mapOf<String, Any>()
         actualizaciones["cambioPropioAnimando"] = null
+        actualizaciones["descarteEspontaneoAnimando"] = mapOf<String, Any>()
+        actualizaciones["descarteFreeAnimando"] = mapOf<String, Any>()
+        actualizaciones["espiaAnimando"] = mapOf<String, Any>()
         actualizaciones["cadenaDescarte"] = mapOf<String, Any>()
         actualizaciones["adelantadoPendiente"] = mapOf<String, Any>()
         actualizaciones["voyPendiente"] = mapOf<String, Any>()
@@ -175,9 +178,9 @@ object FirebaseManager {
         actualizaciones["swapAnimando"] = mapOf<String, Any>()
         actualizaciones["cambioPropioAnimando"] = null
         actualizaciones["descarteEspontaneoAnimando"] = mapOf<String, Any>()
+        actualizaciones["descarteFreeAnimando"] = mapOf<String, Any>()
+        actualizaciones["espiaAnimando"] = mapOf<String, Any>()
         actualizaciones["cadenaDescarte"] = mapOf<String, Any>()
-
-        // Estados nuevos si existen en tu modelo.
         actualizaciones["adelantadoPendiente"] = mapOf<String, Any>()
         actualizaciones["voyPendiente"] = mapOf<String, Any>()
 

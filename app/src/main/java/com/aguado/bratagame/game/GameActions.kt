@@ -20,6 +20,8 @@ import com.google.firebase.database.Transaction
 import com.google.firebase.database.MutableData
 import com.google.firebase.database.DatabaseError
 import com.aguado.bratagame.DescarteEspontaneoAnimando
+import com.aguado.bratagame.DescarteFreeAnimando
+import com.aguado.bratagame.EspiaAnimando
 
 // ─────────────────────────────────────────────
 // GAME ACTIONS
@@ -55,6 +57,16 @@ object GameActions {
         }
 
         return true
+    }
+
+
+    fun limpiarAnimacionDescarteFree(
+        salaId: String
+    ) {
+        val updates = mutableMapOf<String, Any?>()
+        updates["descarteFreeAnimando"] = mapOf<String, Any>()
+
+        salasRef.child(salaId).updateChildren(updates)
     }
 
     // ─────────────────────────────────────────
@@ -361,18 +373,38 @@ object GameActions {
         onError: (String) -> Unit = {}
     ) {
         val descarte = sala.mazoDescarte.toMutableList()
-        descarte.add(
-            cartaEnMano.copy(
-                descartadaPorJugadorId = jugadorId,
-                descartadaDesdeJuegoMesa = false,
-                comodinRobadoDelDescarteValido = false,
-                origenRobo = ""
-            )
+
+        // Índice real donde entra la carta free.
+        // Si después otra carta cae encima, esta conserva su lugar correcto.
+        val indiceDescarteInsertado = descarte.size
+
+        val cartaDescartada = cartaEnMano.copy(
+            descartadaPorJugadorId = jugadorId,
+            descartadaDesdeJuegoMesa = false,
+            comodinRobadoDelDescarteValido = false,
+            origenRobo = ""
         )
+
+        descarte.add(cartaDescartada)
+
+        val animId = java.util.UUID.randomUUID().toString()
+        val ahora = System.currentTimeMillis()
 
         val updates = mutableMapOf<String, Any?>()
         updates["mazoDescarte"] = descarte
         updates["jugadores/$jugadorId/cartaEnMano"] = mapOf<String, Any>()
+
+        updates["descarteFreeAnimando"] = DescarteFreeAnimando(
+            id = animId,
+            ejecutorId = jugadorId,
+            cartaId = cartaEnMano.id,
+            valor = cartaEnMano.valor,
+            palo = cartaEnMano.palo,
+            indiceDescarte = indiceDescarteInsertado,
+            timestampInicio = ahora,
+            duracionViajeMs = 650L,
+            duracionReboteMs = 450L
+        )
 
         // Activar estado: el jugador debe elegir qué carta de su juego descartar
         updates["cartaPoderActiva"] = mapOf(
@@ -488,17 +520,44 @@ object GameActions {
     fun espiarCarta(
         salaId: String,
         jugadorId: String,
-        cartaId: String
+        sala: Sala,
+        cartaId: String,
+        onError: (String) -> Unit = {}
     ) {
+        val localizacion = localizarCartaEnMesa(
+            sala = sala,
+            cartaId = cartaId
+        )
+
+        if (localizacion == null) {
+            onError("No se encontró la carta para espiar")
+            return
+        }
+
+        val ahora = System.currentTimeMillis()
         val updates = mutableMapOf<String, Any?>()
 
         updates["cartaPoderActiva/cartaEspiandoId"] = cartaId
         updates["adelantadoPendiente"] = mapOf<String, Any>()
+
+        // Estado visual independiente.
+        // Aunque luego se limpie cartaPoderActiva o cartaEspiandoId,
+        // esta animación permanece 3 segundos.
+        updates["espiaAnimando"] = EspiaAnimando(
+            id = "espia_${ahora}_${jugadorId}_${cartaId}",
+            ejecutorId = jugadorId,
+            propietarioId = localizacion.propietarioId,
+            posicion = localizacion.posicion,
+            cartaId = cartaId,
+            timestampInicio = ahora,
+            duracionMs = 3000L
+        )
+
         updates["jugadaActual"] = mapOf(
             "jugadorId" to jugadorId,
             "tipo" to "ESPIAR",
             "subaccion" to "Viendo una carta",
-            "timestamp" to System.currentTimeMillis()
+            "timestamp" to ahora
         )
 
         salasRef.child(salaId).updateChildren(updates)
@@ -507,16 +566,40 @@ object GameActions {
     fun espiarCartaCambioViendo(
         salaId: String,
         jugadorId: String,
-        cartaId: String
+        sala: Sala,
+        cartaId: String,
+        onError: (String) -> Unit = {}
     ) {
+        val localizacion = localizarCartaEnMesa(
+            sala = sala,
+            cartaId = cartaId
+        )
+
+        if (localizacion == null) {
+            onError("No se encontró la carta para espiar")
+            return
+        }
+
+        val ahora = System.currentTimeMillis()
         val updates = mutableMapOf<String, Any?>()
 
         updates["cartaPoderActiva/cartaEspiandoId"] = cartaId
+
+        updates["espiaAnimando"] = EspiaAnimando(
+            id = "espia_${ahora}_${jugadorId}_${cartaId}",
+            ejecutorId = jugadorId,
+            propietarioId = localizacion.propietarioId,
+            posicion = localizacion.posicion,
+            cartaId = cartaId,
+            timestampInicio = ahora,
+            duracionMs = 3000L
+        )
+
         updates["jugadaActual"] = mapOf(
             "jugadorId" to jugadorId,
             "tipo" to "CAMBIAR_VIENDO",
             "subaccion" to "Viendo carta; puede cambiarla o regresarla",
-            "timestamp" to System.currentTimeMillis()
+            "timestamp" to ahora
         )
 
         salasRef.child(salaId).updateChildren(updates)
@@ -1778,6 +1861,42 @@ object GameActions {
 
         updates["voyPendiente"] = mapOf<String, Any>()
         updates["jugadaActual"] = mapOf<String, Any>()
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
+    private data class LocalizacionCartaMesa(
+        val propietarioId: String,
+        val posicion: Int,
+        val carta: Carta
+    )
+
+    private fun localizarCartaEnMesa(
+        sala: Sala,
+        cartaId: String
+    ): LocalizacionCartaMesa? {
+        sala.jugadores.values.forEach { jugador ->
+            val mesa = jugador.cartas.mesaNormalizadaACuatroCasillas()
+
+            mesa.forEachIndexed { index, carta ->
+                if (!carta.esSlotVacio() && carta.id == cartaId) {
+                    return LocalizacionCartaMesa(
+                        propietarioId = jugador.id,
+                        posicion = index,
+                        carta = carta
+                    )
+                }
+            }
+        }
+
+        return null
+    }
+
+    fun limpiarAnimacionEspia(
+        salaId: String
+    ) {
+        val updates = mutableMapOf<String, Any?>()
+        updates["espiaAnimando"] = mapOf<String, Any>()
 
         salasRef.child(salaId).updateChildren(updates)
     }

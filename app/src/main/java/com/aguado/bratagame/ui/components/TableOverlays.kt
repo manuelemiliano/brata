@@ -1,11 +1,7 @@
 package com.aguado.bratagame.ui.components
 
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,6 +17,18 @@ import kotlinx.coroutines.delay
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.graphics.graphicsLayer
 
 // ─────────────────────────────────────────────
 // CONTADOR REGRESIVO DE 15 SEGUNDOS
@@ -43,86 +51,132 @@ fun ContadorMemorizacion(
     onTiempoAgotado: () -> Unit
 ) {
     var segundosRestantes by remember { mutableStateOf(duracionSegundos) }
+    var numeroAnimado by remember { mutableStateOf(duracionSegundos) }
     var visible by remember { mutableStateOf(true) }
+    var contadorFinalizado by remember { mutableStateOf(false) }
 
     LaunchedEffect(timestampInicio) {
         while (true) {
             val ahora = System.currentTimeMillis()
             val transcurridos = ((ahora - timestampInicio) / 1000).toInt()
             val restantes = (duracionSegundos - transcurridos).coerceAtLeast(0)
-            segundosRestantes = restantes
 
-            if (restantes == 0) {
-                delay(500) // pequeña pausa antes de desaparecer
+            if (restantes != segundosRestantes) {
+                segundosRestantes = restantes
+                numeroAnimado = restantes
+            }
+
+            if (restantes == 0 && !contadorFinalizado) {
+                contadorFinalizado = true
+                delay(1000)
                 visible = false
                 onTiempoAgotado()
                 break
             }
-            delay(200) // actualizar cada 200ms para mayor precisión
+
+            delay(80)
         }
     }
 
     AnimatedVisibility(
         visible = visible,
-        enter = fadeIn() + scaleIn(),
-        exit = fadeOut() + scaleOut()
+        enter = fadeIn(animationSpec = tween(durationMillis = 180)),
+        exit = fadeOut(animationSpec = tween(durationMillis = 250))
     ) {
         Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
+            modifier = Modifier.fillMaxSize()
         ) {
-            // Fondo semitransparente
-            Box(
+            Text(
+                text = "¡MEMORIZA TUS CARTAS!",
+                color = CasinoGold,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.ExtraBold,
+                textAlign = TextAlign.Center,
                 modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.55f))
+                    .align(Alignment.TopCenter)
+                    .padding(top = 56.dp)
+                    .fillMaxWidth()
             )
 
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = "¡MEMORIZA TUS CARTAS!",
-                    color = CasinoGold,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    textAlign = TextAlign.Center
-                )
+            CountdownNumeroDesvanecible(
+                numero = numeroAnimado,
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+    }
+}
 
-                Spacer(modifier = Modifier.height(16.dp))
+@Composable
+private fun CountdownNumeroDesvanecible(
+    numero: Int,
+    modifier: Modifier = Modifier
+) {
+    var numeroAnterior by remember { mutableStateOf(numero) }
+    var escalaTrigger by remember { mutableStateOf(0) }
 
-                // Círculo con el número
-                val colorCirculo = when {
-                    segundosRestantes <= 5 -> Color(0xFFB71C1C) // rojo urgente
-                    segundosRestantes <= 10 -> Color(0xFFFF8F00) // naranja
-                    else -> Color(0xFF1B5E20)                   // verde casino
+    LaunchedEffect(numero) {
+        numeroAnterior = numero
+        escalaTrigger++
+    }
+
+    val scale by animateFloatAsState(
+        targetValue = if (escalaTrigger % 2 == 0) 1.85f else 1.86f,
+        animationSpec = tween(
+            durationMillis = 1000,
+            easing = FastOutSlowInEasing
+        ),
+        label = "contadorScale"
+    )
+
+    val alpha by animateFloatAsState(
+        targetValue = 0f,
+        animationSpec = tween(
+            durationMillis = 1000,
+            easing = FastOutSlowInEasing
+        ),
+        label = "contadorAlpha"
+    )
+
+    key(numero) {
+        var iniciar by remember { mutableStateOf(false) }
+
+        LaunchedEffect(Unit) {
+            iniciar = true
+        }
+
+        val escalaActual by animateFloatAsState(
+            targetValue = if (iniciar) 1.85f else 1f,
+            animationSpec = tween(
+                durationMillis = 1000,
+                easing = FastOutSlowInEasing
+            ),
+            label = "contadorScaleKey"
+        )
+
+        val alphaActual by animateFloatAsState(
+            targetValue = if (iniciar) 0f else 1f,
+            animationSpec = tween(
+                durationMillis = 1000,
+                easing = FastOutSlowInEasing
+            ),
+            label = "contadorAlphaKey"
+        )
+
+        Box(
+            modifier = modifier.size(170.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = numero.toString(),
+                color = Color.White.copy(alpha = alphaActual),
+                fontSize = 72.sp,
+                fontWeight = FontWeight.Black,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.graphicsLayer {
+                    scaleX = escalaActual
+                    scaleY = escalaActual
                 }
-
-                Box(
-                    modifier = Modifier
-                        .size(96.dp)
-                        .background(colorCirculo, CircleShape)
-                        .border(3.dp, CasinoGold, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "$segundosRestantes",
-                        color = Color.White,
-                        fontSize = 42.sp,
-                        fontWeight = FontWeight.Black
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Text(
-                    text = "Las cartas del centro se voltearán",
-                    color = Color.White.copy(alpha = 0.75f),
-                    fontSize = 13.sp,
-                    textAlign = TextAlign.Center
-                )
-            }
+            )
         }
     }
 }

@@ -8,7 +8,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -38,7 +41,9 @@ import com.aguado.bratagame.ui.theme.CasinoGold
 fun HandPanel(
     cartaEnMano: Carta,
     accionesDisponibles: List<AccionMano>,
-    onAccion: (accion: AccionMano, posicionDestino: Int?) -> Unit
+    onAccion: (AccionMano, Int?) -> Unit,
+    modifier: Modifier = Modifier,
+    onCentroCartaEnManoMedido: (Offset) -> Unit = {}
 ) {
     AnimatedVisibility(
         visible = true,
@@ -85,7 +90,11 @@ fun HandPanel(
                     abierta = true,
                     valor = cartaEnMano.valor,
                     palo = mappingPalo(cartaEnMano.palo),
-                    modifier = Modifier.size(70.dp, 98.dp)
+                    modifier = Modifier
+                        .size(70.dp, 98.dp)
+                        .onGloballyPositioned { coords ->
+                            onCentroCartaEnManoMedido(coords.boundsInRoot().center)
+                        }
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
