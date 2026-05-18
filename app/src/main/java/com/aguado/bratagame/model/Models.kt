@@ -202,12 +202,22 @@ data class Sala(
 
     var cadenaDescarte: CadenaDescarte? = null,
 
+    var ventanaFinalRonda: VentanaFinalRonda? = null,
+
     var adelantadoPendiente: AdelantadoPendiente? = null,
 
     // Regla VOY: ventana temporal antes del robo.
     var voyPendiente: VoyPendiente? = null,
 
     var partidaId: String = ""
+)
+
+data class VentanaFinalRonda(
+    val activa: Boolean = false,
+    val finalizada: Boolean = false,
+    val id: String = "",
+    val timestampInicio: Long = 0L,
+    val duracionMs: Long = 5000L
 )
 
 data class VoyPendiente(

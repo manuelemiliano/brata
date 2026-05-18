@@ -86,18 +86,6 @@ fun ContadorMemorizacion(
         Box(
             modifier = Modifier.fillMaxSize()
         ) {
-            Text(
-                text = "¡MEMORIZA TUS CARTAS!",
-                color = CasinoGold,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.ExtraBold,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 56.dp)
-                    .fillMaxWidth()
-            )
-
             CountdownNumeroDesvanecible(
                 numero = numeroAnimado,
                 modifier = Modifier.align(Alignment.Center)

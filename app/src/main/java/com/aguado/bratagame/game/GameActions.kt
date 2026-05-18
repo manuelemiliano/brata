@@ -22,6 +22,7 @@ import com.google.firebase.database.DatabaseError
 import com.aguado.bratagame.DescarteEspontaneoAnimando
 import com.aguado.bratagame.DescarteFreeAnimando
 import com.aguado.bratagame.EspiaAnimando
+import com.aguado.bratagame.VentanaFinalRonda
 
 // ─────────────────────────────────────────────
 // GAME ACTIONS
@@ -123,18 +124,26 @@ object GameActions {
         if (!jugadorPuedeActuar(sala, jugadorId, onError)) return
 
         val mazo = sala.mazoRobar.toMutableList()
+        val updates = mutableMapOf<String, Any?>()
+
+        if (mazo.isEmpty()) {
+            val reciclaje = reciclarDescarteConservandoUltimasDos(
+                mazoDescarteActual = sala.mazoDescarte,
+                onError = onError
+            ) ?: return
+
+            mazo.addAll(reciclaje.nuevoMazoRobar)
+            updates["mazoDescarte"] = reciclaje.nuevoMazoDescarte
+        }
+
         if (mazo.isEmpty()) {
             onError("El pozo de robo está vacío")
             return
         }
 
         val cartaRobada = mazo.removeAt(0).paraManoTrasRobarDelPozo()
-        val updates = mutableMapOf<String, Any?>()
 
-        // Quitar carta del pozo
         updates["mazoRobar"] = mazo
-
-        // Registrar carta en mano del jugador
         updates["jugadores/$jugadorId/cartaEnMano"] = cartaRobada
 
         romperCadenaSiJugadorEsperado(
@@ -142,6 +151,57 @@ object GameActions {
             sala = sala,
             jugadorId = jugadorId
         )
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
+    fun iniciarVentanaFinalRonda(
+        salaId: String,
+        sala: Sala,
+        duracionMs: Long = 5000L
+    ) {
+        if (!sala.brataActivada) return
+        if (sala.brataJugadorId.isBlank()) return
+
+        val ventanaActual = sala.ventanaFinalRonda
+
+        if (ventanaActual != null && ventanaActual.activa && !ventanaActual.finalizada) {
+            return
+        }
+
+        val ahora = System.currentTimeMillis()
+
+        val updates = mutableMapOf<String, Any?>()
+
+        updates["ventanaFinalRonda"] = VentanaFinalRonda(
+            activa = true,
+            finalizada = false,
+            id = "ventana_final_$ahora",
+            timestampInicio = ahora,
+            duracionMs = duracionMs
+        )
+
+        updates["jugadaActual"] = mapOf(
+            "jugadorId" to sala.brataJugadorId,
+            "tipo" to "VENTANA_FINAL",
+            "subaccion" to "Última oportunidad de descarte",
+            "timestamp" to ahora
+        )
+
+        salasRef.child(salaId).updateChildren(updates)
+    }
+
+    fun finalizarVentanaFinalRonda(
+        salaId: String,
+        ventanaId: String
+    ) {
+        val updates = mutableMapOf<String, Any?>()
+
+        updates["ventanaFinalRonda/activa"] = false
+        updates["ventanaFinalRonda/finalizada"] = true
+        updates["ventanaFinalRonda/id"] = ventanaId
+
+        updates["jugadaActual"] = mapOf<String, Any>()
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -449,20 +509,46 @@ object GameActions {
         }
 
         cartasActuales[posicionDescartada] = MesaSlots.VACIA
+
         val descarte = sala.mazoDescarte.toMutableList()
-        descarte.add(
-            cartaDescartada.copy(
-                descartadaPorJugadorId = jugadorId,
-                descartadaDesdeJuegoMesa = true,
-                comodinRobadoDelDescarteValido = false
-            )
+
+        // Índice real donde entra la carta propia descartada.
+        // Si después otra carta cae encima, esta conserva su lugar correcto.
+        val indiceDescarteInsertado = descarte.size
+
+        val cartaPropiaDescartada = cartaDescartada.copy(
+            descartadaPorJugadorId = jugadorId,
+            descartadaDesdeJuegoMesa = true,
+            comodinRobadoDelDescarteValido = false,
+            origenRobo = ""
         )
+
+        descarte.add(cartaPropiaDescartada)
+
+        val animId = java.util.UUID.randomUUID().toString()
+        val ahora = System.currentTimeMillis()
 
         val updates = mutableMapOf<String, Any?>()
         updates["jugadores/$jugadorId/cartas"] = cartasActuales
         updates["mazoDescarte"] = descarte
         updates["cartaPoderActiva"] = mapOf<String, Any>()
         updates["jugadaActual"] = mapOf<String, Any>()
+
+        // Reutilizamos la animación de carta de mesa hacia el pozo.
+        // Esta animación es visible en todos los dispositivos.
+        updates["descarteEspontaneoAnimando"] = DescarteEspontaneoAnimando(
+            id = animId,
+            ejecutorId = jugadorId,
+            jugadorId = jugadorId,
+            posicion = posicionDescartada,
+            cartaId = cartaDescartada.id,
+            valor = cartaDescartada.valor,
+            palo = cartaDescartada.palo,
+            indiceDescarte = indiceDescarteInsertado,
+            timestampInicio = ahora,
+            duracionViajeMs = 650L,
+            duracionReboteMs = 450L
+        )
 
         aplicarAvancePorDescarteEncadenado(
             updates = updates,
@@ -1077,6 +1163,23 @@ object GameActions {
             duracionReboteMs = 450L
         )
 
+        val ventanaFinal = sala.ventanaFinalRonda
+
+        if (
+            sala.brataActivada &&
+            ventanaFinal != null &&
+            ventanaFinal.activa &&
+            !ventanaFinal.finalizada
+        ) {
+            updates["ventanaFinalRonda"] = VentanaFinalRonda(
+                activa = true,
+                finalizada = false,
+                id = "ventana_final_${ahora}_${jugadorId}",
+                timestampInicio = ahora,
+                duracionMs = ventanaFinal.duracionMs
+            )
+        }
+
         aplicarDescarteEspontaneoConPoliticaDeCadena(
             updates = updates,
             sala = sala,
@@ -1116,6 +1219,16 @@ object GameActions {
 
         if (hueco != null) {
             val pozo = sala.mazoRobar.toMutableList()
+
+            if (pozo.isEmpty()) {
+                val reciclaje = reciclarDescarteConservandoUltimasDos(
+                    mazoDescarteActual = sala.mazoDescarte,
+                    onError = onError
+                ) ?: return
+
+                pozo.addAll(reciclaje.nuevoMazoRobar)
+                updates["mazoDescarte"] = reciclaje.nuevoMazoDescarte
+            }
 
             if (pozo.isEmpty()) {
                 onError("El pozo de robo está vacío")
@@ -1390,21 +1503,14 @@ object GameActions {
         sala: Sala,
         onError: (String) -> Unit = {}
     ) {
-        val descarte = sala.mazoDescarte.toMutableList()
-        if (descarte.size < 2) {
-            onError("No hay suficientes cartas para reciclar")
-            return
-        }
-
-        // La carta superior se queda en el descarte
-        val cartaSuperior = descarte.removeAt(descarte.lastIndex).limpiarMetaDescarteRobo()
-
-        // El resto se mezcla y pasa al pozo
-        val nuevoPozoMezclado = descarte.map { it.limpiarMetaDescarteRobo() }.shuffled()
+        val reciclaje = reciclarDescarteConservandoUltimasDos(
+            mazoDescarteActual = sala.mazoDescarte,
+            onError = onError
+        ) ?: return
 
         val updates = mutableMapOf<String, Any?>()
-        updates["mazoRobar"] = nuevoPozoMezclado
-        updates["mazoDescarte"] = listOf(cartaSuperior)
+        updates["mazoRobar"] = reciclaje.nuevoMazoRobar
+        updates["mazoDescarte"] = reciclaje.nuevoMazoDescarte
 
         salasRef.child(salaId).updateChildren(updates)
     }
@@ -1606,11 +1712,6 @@ object GameActions {
             return
         }
 
-        if (voyActual.jugadorRobandoId == jugadorId) {
-            onResultado(false, "El jugador que va a robar no puede decir VOY")
-            return
-        }
-
         if (!jugadorTieneCartaParaEntregar(jugador)) {
             onResultado(false, "No tienes carta para entregar si aciertas")
             return
@@ -1626,7 +1727,6 @@ object GameActions {
                 if (!voy.activo) return Transaction.abort()
                 if (voy.fase != VOY_FASE_VENTANA) return Transaction.abort()
                 if (voy.reclamadoPorJugadorId.isNotBlank()) return Transaction.abort()
-                if (voy.jugadorRobandoId == jugadorId) return Transaction.abort()
 
                 val ahora = System.currentTimeMillis()
                 if (ahora - voy.timestampInicio > voy.duracionMs) {
@@ -1914,10 +2014,43 @@ object GameActions {
     private const val VOY_TIPO_ROBO_POZO = "POZO"
     private const val VOY_TIPO_ROBO_DESCARTE = "DESCARTE"
 
+
+
     private fun jugadorTieneCartaParaEntregar(jugador: Jugador): Boolean {
         return jugador.cartas
             .mesaNormalizadaACuatroCasillas()
             .any { !it.esSlotVacio() }
+    }
+
+    private data class ResultadoReciclajePozo(
+        val nuevoMazoRobar: MutableList<Carta>,
+        val nuevoMazoDescarte: MutableList<Carta>
+    )
+
+    private fun reciclarDescarteConservandoUltimasDos(
+        mazoDescarteActual: List<Carta>,
+        onError: (String) -> Unit = {}
+    ): ResultadoReciclajePozo? {
+        if (mazoDescarteActual.size <= 2) {
+            onError("No hay suficientes cartas en el descarte para reciclar")
+            return null
+        }
+
+        val ultimasDos = mazoDescarteActual
+            .takeLast(2)
+            .map { it.limpiarMetaDescarteRobo() }
+            .toMutableList()
+
+        val nuevoPozo = mazoDescarteActual
+            .dropLast(2)
+            .map { it.limpiarMetaDescarteRobo() }
+            .shuffled()
+            .toMutableList()
+
+        return ResultadoReciclajePozo(
+            nuevoMazoRobar = nuevoPozo,
+            nuevoMazoDescarte = ultimasDos
+        )
     }
 
     private fun agregarRoboDelPozoAUpdates(
@@ -1940,6 +2073,16 @@ object GameActions {
         if (jugador.cartaEnMano != null) {
             onError("El jugador ya tiene una carta en mano")
             return false
+        }
+
+        if (mazoRobarMutable.isEmpty()) {
+            val reciclaje = reciclarDescarteConservandoUltimasDos(
+                mazoDescarteActual = sala.mazoDescarte,
+                onError = onError
+            ) ?: return false
+
+            mazoRobarMutable.addAll(reciclaje.nuevoMazoRobar)
+            updates["mazoDescarte"] = reciclaje.nuevoMazoDescarte
         }
 
         if (mazoRobarMutable.isEmpty()) {
@@ -2175,44 +2318,42 @@ object GameActions {
         jugadorId: String,
         valorDescartado: String
     ) {
-        val cadenaActual = sala.cadenaDescarte
-            ?.takeIf { it.activa && it.valorBase == valorDescartado }
-
         val esJugadorEnTurno = sala.turnoActualId == jugadorId
-        val esJugadorEsperado = cadenaActual?.turnoEsperadoId == jugadorId
 
-        // Caso 1:
-        // No existe cadena activa.
-        // Si descarta el jugador en turno, inicia cadena.
-        // Si descarta alguien fuera de turno, se permite el descarte,
-        // pero NO cambia el turno.
-        if (cadenaActual == null) {
-            if (esJugadorEnTurno) {
-                aplicarAvancePorDescarteEncadenado(
-                    updates = updates,
-                    sala = sala,
-                    jugadorId = jugadorId,
-                    valorDescartado = valorDescartado
-                )
-            }
-
+        /*
+         * PRIORIDAD ABSOLUTA:
+         * Si el jugador que descarta espontáneamente es el jugador en turno,
+         * su turno se consume siempre.
+         */
+        if (esJugadorEnTurno) {
+            aplicarAvancePorDescarteEncadenado(
+                updates = updates,
+                sala = sala,
+                jugadorId = jugadorId,
+                valorDescartado = valorDescartado
+            )
             return
         }
 
-        // Caso 2:
-        // Hay cadena activa del mismo valor.
-        // Registramos que este jugador ya descartó,
-        // aunque se haya adelantado.
+        /*
+         * A partir de aquí, el descarte fue fuera de turno.
+         * Solo consume turno si ese jugador era el esperado por la cadena.
+         */
+        val cadenaActual = sala.cadenaDescarte
+            ?.takeIf { it.activa && it.valorBase == valorDescartado }
+
+        if (cadenaActual == null) {
+            return
+        }
+
+        val esJugadorEsperado = cadenaActual.turnoEsperadoId == jugadorId
+
         val cadenaConJugadorRegistrado = cadenaActual.copy(
             jugadoresQueDescartaron = cadenaActual.jugadoresQueDescartaron +
                     (jugadorId to true)
         )
 
-        // Caso 3:
-        // Si quien descartó era el jugador esperado,
-        // ahora sí se consumen todos los turnos que ya estén
-        // registrados en orden natural.
-        if (esJugadorEsperado || esJugadorEnTurno) {
+        if (esJugadorEsperado) {
             val resultado = resolverAvanceCadenaDesde(
                 sala = sala,
                 cadena = cadenaConJugadorRegistrado,
@@ -2230,9 +2371,6 @@ object GameActions {
             return
         }
 
-        // Caso 4:
-        // Jugador fuera de turno se adelantó correctamente.
-        // Su descarte queda registrado, pero el turno NO cambia.
         updates["cadenaDescarte"] = cadenaConJugadorRegistrado
     }
 
@@ -2302,7 +2440,10 @@ object GameActions {
         jugadorDesdeId: String
     ): ResultadoCadena {
         var jugadorEvaluadoId = jugadorDesdeId
-        val totalJugadores = sala.jugadores.size.coerceAtLeast(1)
+        val totalJugadores = sala.jugadores.values
+            .count { !it.descalificado }
+            .coerceAtLeast(1)
+
         var saltos = 0
 
         while (saltos < totalJugadores) {
@@ -2322,10 +2463,21 @@ object GameActions {
             saltos++
         }
 
-        // Todos los jugadores del ciclo ya descartaron ese valor.
-        // La cadena termina y el turno continúa con el siguiente calculado.
+        /*
+         * Todos los jugadores activos del ciclo ya descartaron ese valor.
+         *
+         * Ejemplo 2 jugadores:
+         * J1 descarta 4.
+         * J2 descarta 4.
+         * Todos descartaron.
+         * El turno debe volver a J1, no quedarse en J2.
+         *
+         * Ejemplo 6 jugadores:
+         * J1, J2, J3, J4, J5 y J6 descartan 4.
+         * El turno vuelve a J1.
+         */
         return ResultadoCadena(
-            siguienteTurnoId = jugadorEvaluadoId,
+            siguienteTurnoId = cadena.jugadorOrigenId,
             cadenaActualizada = null
         )
     }
@@ -2393,6 +2545,38 @@ object GameActions {
         }
 
         return jugadorActualId
+    }
+
+    private fun jugadorAnteriorDe(
+        jugadorId: String,
+        sala: Sala
+    ): String {
+        val jugadores = sala.jugadores.keys.toList()
+        if (jugadores.isEmpty()) return ""
+
+        val indexActual = jugadores.indexOf(jugadorId)
+
+        if (indexActual < 0) {
+            return jugadores.firstOrNull { id ->
+                sala.jugadores[id]?.descalificado != true
+            } ?: jugadores.first()
+        }
+
+        var offset = 1
+
+        while (offset <= jugadores.size) {
+            val indexAnterior = (indexActual - offset + jugadores.size) % jugadores.size
+            val candidatoId = jugadores[indexAnterior]
+            val candidato = sala.jugadores[candidatoId]
+
+            if (candidato?.descalificado != true) {
+                return candidatoId
+            }
+
+            offset++
+        }
+
+        return jugadorId
     }
 
     // Construye el mapa de actualizaciones para un intercambio de dos cartas

@@ -114,6 +114,9 @@ object FirebaseManager {
         actualizaciones["cadenaDescarte"] = mapOf<String, Any>()
         actualizaciones["adelantadoPendiente"] = mapOf<String, Any>()
         actualizaciones["voyPendiente"] = mapOf<String, Any>()
+        actualizaciones["ventanaFinalRonda"] = mapOf<String, Any>()
+
+
 
         // 8. Identificador de partida.
         // Sirve para que todos los clientes detecten revancha aunque estén en RESULTADO.
@@ -171,6 +174,7 @@ object FirebaseManager {
         // Estados de BRATA.
         actualizaciones["brataActivada"] = false
         actualizaciones["brataJugadorId"] = ""
+        actualizaciones["ventanaFinalRonda"] = mapOf<String, Any>()
 
         // Estados de poderes / animaciones / jugadas.
         actualizaciones["cartaPoderActiva"] = mapOf<String, Any>()

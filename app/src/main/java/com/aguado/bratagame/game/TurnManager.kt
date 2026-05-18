@@ -122,10 +122,16 @@ object TurnManager {
         val jugadoresActivos = sala.jugadores.values.count { !it.descalificado }
 
         val finalPorDescalificacion =
-            sala.estaEnJuego && sala.jugadores.isNotEmpty() && jugadoresActivos <= 1
+            sala.estaEnJuego &&
+                    sala.jugadores.isNotEmpty() &&
+                    jugadoresActivos <= 1
+
+        val ventanaFinal = sala.ventanaFinalRonda
 
         val finalPorBrata =
-            sala.brataActivada && sala.turnoActualId == sala.brataJugadorId
+            sala.brataActivada &&
+                    ventanaFinal != null &&
+                    ventanaFinal.finalizada
 
         return finalPorDescalificacion || finalPorBrata
     }

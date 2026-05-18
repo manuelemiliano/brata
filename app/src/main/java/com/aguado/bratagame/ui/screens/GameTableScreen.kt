@@ -55,6 +55,11 @@ import androidx.compose.ui.text.style.TextAlign
 import com.aguado.bratagame.DescarteEspontaneoAnimando
 import com.aguado.bratagame.DescarteFreeAnimando
 import com.aguado.bratagame.EspiaAnimando
+import com.aguado.bratagame.VentanaFinalRonda
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import kotlin.math.ceil
 
 @Composable
 fun GameTableScreen(
@@ -103,19 +108,29 @@ fun GameTableScreen(
 
     val salaActual = datosSala ?: return
 
+    val ventanaFinalRonda = salaActual.ventanaFinalRonda
+
+    val ventanaFinalActiva =
+        salaActual.brataActivada &&
+                ventanaFinalRonda != null &&
+                ventanaFinalRonda.activa &&
+                !ventanaFinalRonda.finalizada
+
+    val anfitrionId = salaActual.jugadores.values
+        .firstOrNull { it.esAnfitrion }
+        ?.id
+
+    val responsableVentanaFinalId =
+        anfitrionId ?: salaActual.brataJugadorId
+
+    val soyResponsableVentanaFinal =
+        jugadorLocal.id == responsableVentanaFinalId
+
     val espiaAnimandoFirebase = salaActual.espiaAnimando
 
     val yo = salaActual.jugadores[jugadorLocal.id] ?: jugadorLocal
 
     val voyPendienteLocal = salaActual.voyPendiente?.takeIf { it.activo }
-
-    val soyJugadorQueVaARobarVoy =
-        voyPendienteLocal?.jugadorRobandoId == jugadorLocal.id
-
-    val mostrarEsperaRoboVoy =
-        voyPendienteLocal != null &&
-                soyJugadorQueVaARobarVoy &&
-                voyPendienteLocal.fase == "VENTANA"
 
     val soyJugadorQueReclamoVoy =
         voyPendienteLocal?.reclamadoPorJugadorId == jugadorLocal.id
@@ -123,7 +138,6 @@ fun GameTableScreen(
     val puedoPresionarVoy =
         voyPendienteLocal != null &&
                 voyPendienteLocal.fase == "VENTANA" &&
-                !soyJugadorQueVaARobarVoy &&
                 !yo.descalificado &&
                 yo.cartas.mesaNormalizadaACuatroCasillas().any { !it.esSlotVacio() }
 
@@ -159,6 +173,46 @@ fun GameTableScreen(
     val descarteEspontaneoFirebase = salaActual.descarteEspontaneoAnimando
 
     val descarteFreeFirebase = salaActual.descarteFreeAnimando
+
+    LaunchedEffect(
+        salaActual.brataActivada,
+        salaActual.turnoActualId,
+        salaActual.brataJugadorId,
+        ventanaFinalRonda?.id,
+        ventanaFinalRonda?.finalizada
+    ) {
+        val debeAbrirVentanaFinal =
+            salaActual.brataActivada &&
+                    salaActual.brataJugadorId.isNotBlank() &&
+                    salaActual.turnoActualId == salaActual.brataJugadorId &&
+                    ventanaFinalRonda?.finalizada != true &&
+                    ventanaFinalRonda?.activa != true
+
+        if (debeAbrirVentanaFinal && soyResponsableVentanaFinal) {
+            GameActions.iniciarVentanaFinalRonda(
+                salaId = idSala,
+                sala = salaActual,
+                duracionMs = 5000L
+            )
+        }
+    }
+
+    LaunchedEffect(ventanaFinalRonda?.id) {
+        val ventana = ventanaFinalRonda ?: return@LaunchedEffect
+
+        if (!ventana.activa || ventana.finalizada) return@LaunchedEffect
+        if (!soyResponsableVentanaFinal) return@LaunchedEffect
+
+        val transcurrido = System.currentTimeMillis() - ventana.timestampInicio
+        val restante = (ventana.duracionMs - transcurrido).coerceAtLeast(0L)
+
+        delay(restante + 120L)
+
+        GameActions.finalizarVentanaFinalRonda(
+            salaId = idSala,
+            ventanaId = ventana.id
+        )
+    }
 
     LaunchedEffect(espiaAnimandoFirebase?.id) {
         val anim = espiaAnimandoFirebase ?: return@LaunchedEffect
@@ -818,7 +872,10 @@ fun GameTableScreen(
                             estadoPoder.tipoPoder == TipoPoder.CAMBIAR_SIN_VER &&
                                     seleccionSinVer.isEmpty()
 
-                        if (esPrimerSeleccionSinVer) {
+                        val esSeleccionDescarteFree =
+                            estadoPoder.tipoPoder == TipoPoder.DESCARTE_FREE_SELECCION
+
+                        if (esPrimerSeleccionSinVer || esSeleccionDescarteFree) {
                             mesaLayout.freezeCentersForSwap(
                                 MesaCardKey(cartaEnMesa.propietarioId, cartaEnMesa.posicion),
                                 MesaCardKey(cartaEnMesa.propietarioId, cartaEnMesa.posicion)
@@ -880,11 +937,13 @@ fun GameTableScreen(
 
                     puedeRobarDelPozo = !jugadorLocalDescalificado &&
                             estadoTurno.puedeRobar &&
-                            voyPendienteLocal == null,
+                            voyPendienteLocal == null &&
+                            !ventanaFinalActiva,
 
                     puedeRobarDelDescarte = !jugadorLocalDescalificado &&
                             estadoTurno.puedeRobarDelDescarte &&
-                            voyPendienteLocal == null,
+                            voyPendienteLocal == null &&
+                            !ventanaFinalActiva,
 
                     onRobarPozo = {
                         GameActions.solicitarRoboDelPozoConVoy(
@@ -926,27 +985,8 @@ fun GameTableScreen(
             }
 
             if (
-                mostrarEsperaRoboVoy &&
-                !esObservador
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(bottom = 160.dp),
-                    contentAlignment = Alignment.BottomCenter
-                ) {
-                    PanelEsperaRoboVoy(
-                        texto = if (voyPendienteLocal?.tipoRobo == "DESCARTE") {
-                            "Robando descarte..."
-                        } else {
-                            "Robando carta..."
-                        }
-                    )
-                }
-            }
-
-            if (
                 cartaEnMano != null &&
+                !ventanaFinalActiva &&
                 !jugadorLocalDescalificado &&
                 !esObservador &&
                 !estadoPoder.estaEspiando &&
@@ -956,7 +996,6 @@ fun GameTableScreen(
                 !seleccionVoyObjetivoActiva &&
                 !seleccionVoyEntregaActiva &&
                 voyPendienteLocal == null &&
-                !mostrarEsperaRoboVoy &&
                 salaActual.cambioPropioAnimando == null
             ) {
                 val ultimaDescarte = salaActual.mazoDescarte.lastOrNull()
@@ -1402,6 +1441,15 @@ fun GameTableScreen(
                         visibleEnPozo = estaVisibleEnDescarte
                     )
                 }
+            }
+
+            if (ventanaFinalActiva && ventanaFinalRonda != null) {
+                IndicadorVentanaFinalRonda(
+                    ventana = ventanaFinalRonda,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(top = 48.dp, start = 16.dp)
+                )
             }
 
             // 9. Botón salir
@@ -2139,7 +2187,7 @@ fun CuadradoCartasInteractivo(
                                         .border(
                                             width = 3.dp,
                                             color = if (estaSeleccionadaVisualmente) {
-                                                Color(0xFF9C27B0)
+                                                Color(0xFFFF0000)
                                             } else {
                                                 Color(0xFF2196F3)
                                             },
@@ -2237,10 +2285,27 @@ fun MazosCentralesInteractivos(
     onCentroPenultimaDescarteMedido: (Offset) -> Unit = {}
 ) {
     val contenido = @Composable {
-        Box(modifier = Modifier.then(if (puedeRobarDelPozo) Modifier.clickable { onRobarPozo() } else Modifier)) {
+        Box(
+            modifier = Modifier.then(
+                if (puedeRobarDelPozo) {
+                    Modifier.clickable { onRobarPozo() }
+                } else {
+                    Modifier
+                }
+            )
+        ) {
             CartaVisual(abierta = false)
+
             if (puedeRobarDelPozo) {
-                Box(modifier = Modifier.matchParentSize().background(CasinoGold.copy(alpha = 0.25f), RoundedCornerShape(4.dp)))
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .border(
+                            width = 3.dp,
+                            color = Color(0xFF2196F3),
+                            shape = RoundedCornerShape(4.dp)
+                        )
+                )
             }
         }
 
@@ -2322,9 +2387,10 @@ fun MazosCentralesInteractivos(
                             Box(
                                 modifier = Modifier
                                     .matchParentSize()
-                                    .background(
-                                        CasinoGold.copy(alpha = 0.25f),
-                                        RoundedCornerShape(4.dp)
+                                    .border(
+                                        width = 3.dp,
+                                        color = Color(0xFF2196F3),
+                                        shape = RoundedCornerShape(4.dp)
                                     )
                             )
                         }
@@ -2885,6 +2951,73 @@ private fun CartaDescarteEspontaneoHaciaPozoAnimation(
                     modifier = Modifier.size(50.dp, 70.dp)
                 )
             }
+        }
+    }
+}
+
+
+@Composable
+private fun IndicadorVentanaFinalRonda(
+    ventana: VentanaFinalRonda,
+    modifier: Modifier = Modifier
+) {
+    var ahora by remember(ventana.id) {
+        mutableStateOf(System.currentTimeMillis())
+    }
+
+    LaunchedEffect(ventana.id) {
+        while (true) {
+            ahora = System.currentTimeMillis()
+
+            val transcurrido = ahora - ventana.timestampInicio
+            if (transcurrido >= ventana.duracionMs) {
+                break
+            }
+
+            delay(32L)
+        }
+    }
+
+    val transcurrido = ahora - ventana.timestampInicio
+    val restanteMs = (ventana.duracionMs - transcurrido).coerceAtLeast(0L)
+
+    val progreso = if (ventana.duracionMs <= 0L) {
+        0f
+    } else {
+        (restanteMs.toFloat() / ventana.duracionMs.toFloat())
+            .coerceIn(0f, 1f)
+    }
+
+    Box(
+        modifier = modifier.size(46.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            val strokeWidth = 4.dp.toPx()
+
+            drawArc(
+                color = Color(0xFF52BD45).copy(alpha = 0.25f),
+                startAngle = -90f,
+                sweepAngle = 360f,
+                useCenter = false,
+                style = Stroke(
+                    width = strokeWidth,
+                    cap = StrokeCap.Round
+                )
+            )
+
+            drawArc(
+                color = Color(0xFF52BD45),
+                startAngle = -90f,
+                sweepAngle = 360f * progreso,
+                useCenter = false,
+                style = Stroke(
+                    width = strokeWidth,
+                    cap = StrokeCap.Round
+                )
+            )
         }
     }
 }
