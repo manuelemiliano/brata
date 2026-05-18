@@ -524,15 +524,6 @@ fun GameTableScreen(
     ProvideMesaCardLayout(mesaLayout) {
         Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0D3311))) {
 
-            if (mostrarHistorialJugadas) {
-                HistorialJugadasModal(
-                    historial = historialJugadasOrdenado,
-                    onCerrar = {
-                        mostrarHistorialJugadas = false
-                    }
-                )
-            }
-
             Image(
                 painter = painterResource(id = R.drawable.brata_bg),
                 contentDescription = null,
@@ -1568,6 +1559,15 @@ fun GameTableScreen(
                     imageVector = Icons.Default.ExitToApp,
                     contentDescription = "Salir",
                     tint = Color(0xFF456B03)
+                )
+            }
+
+            if (mostrarHistorialJugadas) {
+                HistorialJugadasModal(
+                    historial = historialJugadasOrdenado,
+                    onCerrar = {
+                        mostrarHistorialJugadas = false
+                    }
                 )
             }
         }

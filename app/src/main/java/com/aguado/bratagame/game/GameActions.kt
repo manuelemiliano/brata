@@ -2082,27 +2082,31 @@ object GameActions {
                 onError = onError
             )
 
-            val roboOk = agregarRoboOriginalVoyAUpdates(
-                updates = updates,
-                sala = sala,
-                voy = voy,
-                mazoRobarMutable = mazoRobarMutable,
-                mazoDescarteMutable = mazoDescarteMutable,
-                onError = onError
-            )
+            val completarRoboOriginal =
+                debeCompletarRoboOriginalDespuesDeVoy(
+                    voy = voy,
+                    jugadorQueReclamoVoyId = jugadorId
+                )
 
-            if (!roboOk) return
+            if (completarRoboOriginal) {
+                val roboOk = agregarRoboOriginalVoyAUpdates(
+                    updates = updates,
+                    sala = sala,
+                    voy = voy,
+                    mazoRobarMutable = mazoRobarMutable,
+                    mazoDescarteMutable = mazoDescarteMutable,
+                    onError = onError
+                )
+
+                if (!roboOk) return
+            } else {
+                // El jugador en turno dijo VOY.
+                // Se cancela el robo pendiente y conserva su turno.
+                updates["turnoActualId"] = voy.jugadorRobandoId
+            }
 
             updates["voyPendiente"] = mapOf<String, Any>()
             updates["jugadaActual"] = mapOf<String, Any>()
-
-            agregarHistorialJugadaEnUpdates(
-                updates = updates,
-                sala = sala,
-                jugadorId = jugadorId,
-                tipo = "VOY_FALLIDO",
-                mensaje = "${nombreJugadorSeguro(sala, jugadorId)} falló VOY."
-            )
 
             salasRef.child(salaId).updateChildren(updates)
             return
@@ -2215,16 +2219,29 @@ object GameActions {
         val mazoRobarMutable = sala.mazoRobar.toMutableList()
         val mazoDescarteMutable = sala.mazoDescarte.toMutableList()
 
-        val roboOk = agregarRoboOriginalVoyAUpdates(
-            updates = updates,
-            sala = sala,
-            voy = voy,
-            mazoRobarMutable = mazoRobarMutable,
-            mazoDescarteMutable = mazoDescarteMutable,
-            onError = onError
-        )
+        val completarRoboOriginal =
+            debeCompletarRoboOriginalDespuesDeVoy(
+                voy = voy,
+                jugadorQueReclamoVoyId = jugadorId
+            )
 
-        if (!roboOk) return
+        if (completarRoboOriginal) {
+            val roboOk = agregarRoboOriginalVoyAUpdates(
+                updates = updates,
+                sala = sala,
+                voy = voy,
+                mazoRobarMutable = mazoRobarMutable,
+                mazoDescarteMutable = mazoDescarteMutable,
+                onError = onError
+            )
+
+            if (!roboOk) return
+        } else {
+            // El jugador en turno dijo VOY.
+            // No recibe carta automáticamente.
+            // Conserva su turno para decidir entre robar o BRATA.
+            updates["turnoActualId"] = voy.jugadorRobandoId
+        }
 
         updates["jugadores/$jugadorId/cartas"] = cartasVoy
         updates["jugadores/${voy.jugadorObjetivoId}/cartas"] = cartasObjetivo
@@ -2293,7 +2310,14 @@ object GameActions {
     private const val VOY_TIPO_ROBO_DESCARTE = "DESCARTE"
 
 
-
+    private fun debeCompletarRoboOriginalDespuesDeVoy(
+        voy: VoyPendiente,
+        jugadorQueReclamoVoyId: String
+    ): Boolean {
+        // Si el jugador que iba a robar fue quien dijo VOY,
+        // se cancela el robo pendiente.
+        return voy.jugadorRobandoId != jugadorQueReclamoVoyId
+    }
     private fun jugadorTieneCartaParaEntregar(jugador: Jugador): Boolean {
         return jugador.cartas
             .mesaNormalizadaACuatroCasillas()
