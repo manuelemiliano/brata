@@ -99,6 +99,8 @@ fun GameTableScreen(
 
     var mostrarHistorialJugadas by remember { mutableStateOf(false) }
 
+    var mostrarConfirmacionSalir by remember { mutableStateOf(false) }
+
     var cartasAlejadasVisibles by remember { mutableStateOf(true) }
 
     DisposableEffect(idSala) {
@@ -1551,7 +1553,9 @@ fun GameTableScreen(
 
             // 9. Botón salir
             IconButton(
-                onClick = onSalir,
+                onClick = {
+                    mostrarConfirmacionSalir = true
+                },
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(top = 48.dp, end = 16.dp)
@@ -1560,6 +1564,61 @@ fun GameTableScreen(
                     imageVector = Icons.Default.ExitToApp,
                     contentDescription = "Salir",
                     tint = Color(0xFF456B03)
+                )
+            }
+
+            if (mostrarConfirmacionSalir) {
+                AlertDialog(
+                    onDismissRequest = {
+                        mostrarConfirmacionSalir = false
+                    },
+                    containerColor = Color(0xFF123515).copy(alpha = 0.96f),
+                    titleContentColor = CasinoGold,
+                    textContentColor = Color.White,
+                    title = {
+                        Text(
+                            text = "Salir de la mesa",
+                            fontWeight = FontWeight.Black
+                        )
+                    },
+                    text = {
+                        Text(
+                            text = "¿Seguro que quieres salir de la mesa? Puedes perder el seguimiento de la partida actual.",
+                            fontSize = 14.sp,
+                            lineHeight = 18.sp
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                mostrarConfirmacionSalir = false
+                                onSalir()
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF8A1D1D),
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text(
+                                text = "SALIR",
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = {
+                                mostrarConfirmacionSalir = false
+                            }
+                        ) {
+                            Text(
+                                text = "CANCELAR",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                 )
             }
 
