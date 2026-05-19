@@ -573,7 +573,7 @@ object GameActions {
             palo = cartaEnMano.palo,
             indiceDescarte = indiceDescarteInsertado,
             timestampInicio = ahora,
-            duracionViajeMs = 650L,
+            duracionViajeMs = 1_200L,
             duracionReboteMs = 450L
         )
 
@@ -657,7 +657,7 @@ object GameActions {
             palo = cartaDescartada.palo,
             indiceDescarte = indiceDescarteInsertado,
             timestampInicio = ahora,
-            duracionViajeMs = 650L,
+            duracionViajeMs = 1_200L,
             duracionReboteMs = 450L
         )
 
@@ -910,7 +910,7 @@ object GameActions {
             palo = cartaADescartar.palo,
             indiceDescarte = indiceDescarteInsertado,
             timestampInicio = ahora,
-            duracionViajeMs = 650L,
+            duracionViajeMs = 1_200L,
             duracionReboteMs = 450L
         )
 
@@ -1033,7 +1033,7 @@ object GameActions {
             palo = cartaEspiada.palo,
             indiceDescarte = indiceDescarteInsertado,
             timestampInicio = ahora,
-            duracionViajeMs = 950L,
+            duracionViajeMs = 1_200L,
             duracionReboteMs = 250L
         )
 
@@ -1050,7 +1050,7 @@ object GameActions {
             valor = cartaParaDar.valor,
             palo = cartaParaDar.palo,
             timestampInicio = ahora,
-            duracionMs = 650L
+            duracionMs = 1_200L
         )
 
         aplicarAvancePorDescarteEncadenado(
@@ -1414,7 +1414,7 @@ object GameActions {
             palo = cartaADescartar.palo,
             indiceDescarte = indiceDescarteInsertado,
             timestampInicio = ahora,
-            duracionViajeMs = 650L,
+            duracionViajeMs = 1_200L,
             duracionReboteMs = 450L
         )
 

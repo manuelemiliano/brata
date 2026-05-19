@@ -1797,7 +1797,7 @@ private fun CartaEntregaEspiadoAnimation(
                 }
             ) {
                 CartaVisual(
-                    abierta = true,
+                    abierta = false,
                     valor = animacion.valor,
                     palo = mappingPalo(animacion.palo),
                     modifier = Modifier.size(50.dp, 70.dp)
