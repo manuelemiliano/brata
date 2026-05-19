@@ -24,6 +24,7 @@ import com.aguado.bratagame.DescarteFreeAnimando
 import com.aguado.bratagame.EspiaAnimando
 import com.aguado.bratagame.VentanaFinalRonda
 import com.aguado.bratagame.HistorialJugada
+import com.aguado.bratagame.EntregaCartaEspiadoAnimando
 
 // ─────────────────────────────────────────────
 // GAME ACTIONS
@@ -952,44 +953,104 @@ object GameActions {
             return
         }
 
-        val jugador = sala.jugadores[jugadorId] ?: run { onError("Jugador no encontrado"); return }
-        val espiado = sala.jugadores[propietarioEspiadoId] ?: run { onError("Espiado no encontrado"); return }
+        val jugador = sala.jugadores[jugadorId] ?: run {
+            onError("Jugador no encontrado")
+            return
+        }
+
+        val espiado = sala.jugadores[propietarioEspiadoId] ?: run {
+            onError("Espiado no encontrado")
+            return
+        }
 
         val cartasJugador = jugador.cartas.mesaNormalizadaACuatroCasillas()
+
         if (posicionCartaPropia !in 0..3) {
             onError("Posición inválida")
             return
         }
+
         val cartaParaDar = cartasJugador[posicionCartaPropia]
+
         if (cartaParaDar.esSlotVacio()) {
             onError("Casilla vacía")
             return
         }
-        cartasJugador[posicionCartaPropia] = MesaSlots.VACIA
 
         val cartasEspiado = espiado.cartas.mesaNormalizadaACuatroCasillas()
+
         val idxEspiada = cartasEspiado.indexOfFirst { it.id == cartaEspiada.id }
+
         if (idxEspiada < 0) {
             onError("Carta espiada no encontrada en mesa")
             return
         }
+
+        // 1. La carta propia del espía sale de su juego.
+        cartasJugador[posicionCartaPropia] = MesaSlots.VACIA
+
+        // 2. La carta propia del espía ocupa el hueco que dejó la carta espiada.
         cartasEspiado[idxEspiada] = cartaParaDar
+            .limpiarMetaDescarteRobo()
+            .copy(abierta = false)
 
         val descarte = sala.mazoDescarte.toMutableList()
-        descarte.add(
-            cartaEspiada.copy(
-                descartadaPorJugadorId = jugadorId,
-                descartadaDesdeJuegoMesa = false,
-                comodinRobadoDelDescarteValido = false
-            )
+
+        // Índice real donde entra la carta espiada al descarte.
+        val indiceDescarteInsertado = descarte.size
+
+        val cartaEspiadaAlDescarte = cartaEspiada.copy(
+            descartadaPorJugadorId = jugadorId,
+            descartadaDesdeJuegoMesa = true,
+            comodinRobadoDelDescarteValido = false,
+            origenRobo = ""
         )
 
+        descarte.add(cartaEspiadaAlDescarte)
+
+        val ahora = System.currentTimeMillis()
+        val animIdDescarte = java.util.UUID.randomUUID().toString()
+        val animIdEntrega = java.util.UUID.randomUUID().toString()
+
         val updates = mutableMapOf<String, Any?>()
+
         updates["jugadores/$jugadorId/cartas"] = cartasJugador
         updates["jugadores/$propietarioEspiadoId/cartas"] = cartasEspiado
         updates["mazoDescarte"] = descarte
         updates["cartaPoderActiva"] = mapOf<String, Any>()
         updates["jugadaActual"] = mapOf<String, Any>()
+
+        // Animación 1:
+        // La carta espiada del jugador espiado viaja al pozo de descarte.
+        updates["descarteEspontaneoAnimando"] = DescarteEspontaneoAnimando(
+            id = animIdDescarte,
+            ejecutorId = jugadorId,
+            jugadorId = propietarioEspiadoId,
+            posicion = idxEspiada,
+            cartaId = cartaEspiada.id,
+            valor = cartaEspiada.valor,
+            palo = cartaEspiada.palo,
+            indiceDescarte = indiceDescarteInsertado,
+            timestampInicio = ahora,
+            duracionViajeMs = 950L,
+            duracionReboteMs = 250L
+        )
+
+        // Animación 2:
+        // La carta propia del espía viaja hacia el espacio vacío del jugador espiado.
+        updates["entregaCartaEspiadoAnimando"] = EntregaCartaEspiadoAnimando(
+            id = animIdEntrega,
+            ejecutorId = jugadorId,
+            origenJugadorId = jugadorId,
+            origenPosicion = posicionCartaPropia,
+            destinoJugadorId = propietarioEspiadoId,
+            destinoPosicion = idxEspiada,
+            cartaId = cartaParaDar.id,
+            valor = cartaParaDar.valor,
+            palo = cartaParaDar.palo,
+            timestampInicio = ahora,
+            duracionMs = 650L
+        )
 
         aplicarAvancePorDescarteEncadenado(
             updates = updates,
@@ -1002,14 +1063,6 @@ object GameActions {
             updates = updates,
             sala = sala,
             jugadorId = jugadorId
-        )
-
-        agregarHistorialJugadaEnUpdates(
-            updates = updates,
-            sala = sala,
-            jugadorId = jugadorId,
-            tipo = "DESCARTAR_CARTA_ESPIADA",
-            mensaje = "${nombreJugadorSeguro(sala, jugadorId)} descartó la carta espiada ${cartaEspiada.valor} y entregó una carta."
         )
 
         salasRef.child(salaId).updateChildren(updates)
@@ -1090,13 +1143,10 @@ object GameActions {
             return
         }
 
-        if (sala.swapAnimando != null) {
-            onError("Ya hay un cambio en proceso")
-            return
-        }
-
-        updates["cartaPoderActiva"] = mapOf<String, Any>()
-        updates["jugadaActual"] = mapOf<String, Any>()
+        updates["cartaPoderActiva"] = null
+        updates["swapAnimando"] = null
+        updates["jugadaActual"] = null
+        updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
 
         aplicarAvancePorCimaActualDelDescarte(
             updates = updates,
@@ -1160,7 +1210,6 @@ object GameActions {
         cartaBId: String,
         onError: (String) -> Unit = {}
     ) {
-
         val poder = sala.cartaPoderActiva
 
         if (
@@ -1172,10 +1221,12 @@ object GameActions {
             return
         }
 
-        if (sala.swapAnimando != null) {
-            onError("Ya hay un cambio en proceso")
-            return
-        }
+        /*
+         * IMPORTANTE:
+         * No validar aquí si swapAnimando existe.
+         * En la confirmación DEBE existir, porque venimos precisamente
+         * del final de CardSwapAnimation.
+         */
 
         val updates = construirUpdatesIntercambioPorId(
             sala = sala,
@@ -1186,8 +1237,10 @@ object GameActions {
             onError = onError
         ) ?: return
 
-        updates["cartaPoderActiva"] = mapOf<String, Any>()
-        updates["jugadaActual"] = mapOf<String, Any>()
+        updates["cartaPoderActiva"] = null
+        updates["swapAnimando"] = null
+        updates["jugadaActual"] = null
+        updates["turnoActualId"] = siguienteTurno(jugadorId, sala)
 
         aplicarAvancePorCimaActualDelDescarte(
             updates = updates,

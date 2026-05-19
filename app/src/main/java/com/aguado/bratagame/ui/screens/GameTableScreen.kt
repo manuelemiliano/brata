@@ -1427,7 +1427,8 @@ fun GameTableScreen(
                                 }
 
                                 seleccionSinVer = emptyList()
-                                GameActions.limpiarAnimacionSwap(idSala)
+                                accionPoderEnProceso = false
+                                cartasSeleccionadasVisualmente = emptySet()
                             }
                         }
                     )
