@@ -79,6 +79,11 @@ class MainActivity : ComponentActivity() {
                                 .remove("sala_id")
                                 .remove("jugador_nombre")
                                 .apply()
+
+                            jugadorActual = null
+                            idSalaActual = null
+                            salaActual = null
+                            pantalla = Pantalla.LOGIN
                         }
                     }
                 }
@@ -195,6 +200,16 @@ class MainActivity : ComponentActivity() {
 
                                     idSalaActual = idSala
                                     pantalla = Pantalla.LOBBY
+                                } else {
+                                    prefs.edit()
+                                        .remove("sala_id")
+                                        .remove("jugador_nombre")
+                                        .apply()
+
+                                    jugadorActual = null
+                                    idSalaActual = null
+                                    salaActual = null
+                                    pantalla = Pantalla.LOGIN
                                 }
                             }
                         }

@@ -25,7 +25,7 @@ import com.aguado.bratagame.EspiaAnimando
 import com.aguado.bratagame.VentanaFinalRonda
 import com.aguado.bratagame.HistorialJugada
 import com.aguado.bratagame.EntregaCartaEspiadoAnimando
-import com.aguado.bratagame.Observador
+import com.aguado.bratagame.EstadoParticipante
 
 // ─────────────────────────────────────────────
 // GAME ACTIONS
@@ -2400,10 +2400,17 @@ object GameActions {
         updates["mazoRobar"] = nuevoMazoRobar
 
         // Se elimina completamente de jugadores activos.
+        // Se elimina completamente de jugadores activos.
         updates["jugadores/$jugadorId"] = null
 
-        // Se marca como expulsado de esta partida para impedir reingreso.
+        // Candado de compatibilidad.
         updates["jugadoresExpulsados/$jugadorId"] = true
+
+        // Candado permanente por estado de participante.
+        updates["participantes/$jugadorId/estado"] = EstadoParticipante.EXPULSADO.name
+        updates["participantes/$jugadorId/conectado"] = false
+        updates["participantes/$jugadorId/ultimaConexion"] = System.currentTimeMillis()
+        updates["participantes/$jugadorId/motivo"] = "TERCER_ERROR"
 
         // Si era su turno, avanzar al siguiente jugador activo.
         if (sala.turnoActualId == jugadorId) {
@@ -2670,121 +2677,6 @@ object GameActions {
                 )
             }
         }
-    }
-
-    private fun moverJugadorDescalificadoAObservadorEnUpdates(
-        updates: MutableMap<String, Any?>,
-        sala: Sala,
-        jugadorId: String,
-        mazoRobarBase: MutableList<Carta>
-    ) {
-        val jugador = sala.jugadores[jugadorId] ?: return
-
-        val cartasMesa = jugador.cartas
-            .mesaNormalizadaACuatroCasillas()
-            .filterNot { it.esSlotVacio() }
-            .map {
-                it.limpiarMetaDescarteRobo()
-                    .copy(abierta = false)
-            }
-
-        val cartaEnMano = jugador.cartaEnMano
-            ?.limpiarMetaDescarteRobo()
-            ?.copy(abierta = false)
-
-        val cartasAReciclar = buildList {
-            addAll(cartasMesa)
-            if (cartaEnMano != null) {
-                add(cartaEnMano)
-            }
-        }
-
-        val nuevoMazoRobar = (mazoRobarBase + cartasAReciclar)
-            .shuffled()
-            .toMutableList()
-
-        // Sus cartas regresan al pozo de robo randomizadas.
-        updates["mazoRobar"] = nuevoMazoRobar
-
-        // Se agrega como observador.
-        updates["observadores/$jugadorId"] = Observador(
-            id = jugador.id,
-            nombre = jugador.nombre
-        )
-
-        // Se elimina de jugadores activos.
-        // Esto hace que su dispositivo entre como observador:
-        // esObservador = !salaActual.jugadores.containsKey(jugadorLocal.id)
-        updates["jugadores/$jugadorId"] = null
-
-        // Si era su turno, avanza al siguiente jugador activo.
-        if (sala.turnoActualId == jugadorId) {
-            val siguiente = siguienteTurno(jugadorId, sala)
-            updates["turnoActualId"] = if (siguiente == jugadorId) "" else siguiente
-        }
-
-        // Si tenía poder activo, se cancela.
-        if (sala.cartaPoderActiva?.jugadorId == jugadorId) {
-            updates["cartaPoderActiva"] = null
-        }
-
-        // Si tenía animación de cambio propia, se cancela.
-        if (sala.cambioPropioAnimando?.ejecutorId == jugadorId) {
-            updates["cambioPropioAnimando"] = null
-        }
-
-        // Si tenía swap activo, se cancela.
-        if (sala.swapAnimando?.ejecutorId == jugadorId) {
-            updates["swapAnimando"] = null
-        }
-
-        // Si estaba involucrado en VOY, se limpia.
-        val voy = sala.voyPendiente
-        if (
-            voy != null &&
-            (
-                    voy.jugadorRobandoId == jugadorId ||
-                            voy.reclamadoPorJugadorId == jugadorId ||
-                            voy.jugadorObjetivoId == jugadorId
-                    )
-        ) {
-            updates["voyPendiente"] = null
-        }
-
-        // Si había presionado BRATA, se cancela la última ronda.
-        if (sala.brataJugadorId == jugadorId) {
-            updates["brataActivada"] = false
-            updates["brataJugadorId"] = ""
-            updates["ventanaFinalRonda"] = null
-        }
-
-        // Limpia cadenas pendientes para evitar que esperen a un jugador eliminado.
-        val cadena = sala.cadenaDescarte
-        if (
-            cadena != null &&
-            (
-                    cadena.jugadorOrigenId == jugadorId ||
-                            cadena.turnoEsperadoId == jugadorId ||
-                            cadena.jugadoresQueDescartaron.containsKey(jugadorId)
-                    )
-        ) {
-            updates["cadenaDescarte"] = null
-        }
-
-        updates["jugadaActual"] = mapOf(
-            "jugadorId" to jugadorId,
-            "tipo" to "DESCALIFICADO",
-            "subaccion" to "Pasó a observador y sus cartas regresaron al pozo",
-            "timestamp" to System.currentTimeMillis()
-        )
-
-        agregarHistorialJugadaEnUpdates(
-            updates = updates,
-            sala = sala,
-            jugadorId = jugadorId,
-            tipo = "DESCALIFICADO",
-            mensaje = "${nombreJugadorSeguro(sala, jugadorId)} quedó descalificado y sus cartas regresaron al pozo."
-        )
     }
 
     private fun aplicarCastigoOErrorEnUpdates(

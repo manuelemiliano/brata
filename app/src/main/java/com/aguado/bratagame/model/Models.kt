@@ -129,15 +129,6 @@ data class Jugador(
 )
 
 // ─────────────────────────────────────────────
-// OBSERVADOR (modo dios: ve todas las cartas abiertas)
-// ─────────────────────────────────────────────
-
-data class Observador(
-    var id: String = "",
-    var nombre: String = ""
-)
-
-// ─────────────────────────────────────────────
 // SALA
 // ─────────────────────────────────────────────
 
@@ -148,8 +139,7 @@ data class Sala(
     // Jugadores activos (máximo 6)
     var jugadores: Map<String, Jugador> = emptyMap(),
 
-    // Observadores (sin límite)
-    var observadores: Map<String, Observador> = emptyMap(),
+    var participantes: Map<String, ParticipantePartida> = emptyMap(),
 
     var jugadoresExpulsados: Map<String, Boolean> = emptyMap(),
 
@@ -216,6 +206,23 @@ data class Sala(
     var voyPendiente: VoyPendiente? = null,
 
     var partidaId: String = ""
+)
+
+enum class EstadoParticipante {
+    ACTIVO,
+    DESCONECTADO,
+    EXPULSADO,
+    ABANDONO
+}
+
+data class ParticipantePartida(
+    var id: String = "",
+    var nombre: String = "",
+    var estado: EstadoParticipante = EstadoParticipante.ACTIVO,
+    var partidaId: String = "",
+    var conectado: Boolean = true,
+    var ultimaConexion: Long = 0L,
+    var motivo: String = ""
 )
 
 data class HistorialJugada(

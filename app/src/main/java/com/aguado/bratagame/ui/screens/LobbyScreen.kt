@@ -39,7 +39,11 @@ fun LobbyScreen(
 ) {
     var datosSala by remember { mutableStateOf<Sala?>(null) }
     LaunchedEffect(Unit) {
-        FirebaseManager.unirseASala(idSalaInicial, jugadorLocal) { }
+        FirebaseManager.unirseASala(idSalaInicial, jugadorLocal) { exito ->
+            if (!exito) {
+                onSalirAlLogin()
+            }
+        }
     }
 
     // Escucha en tiempo real (Sincronización automática)

@@ -63,6 +63,7 @@ import com.aguado.bratagame.EntregaCartaEspiadoAnimando
 import com.aguado.bratagame.HistorialJugada
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Divider
+import androidx.compose.ui.platform.LocalConfiguration
 
 @Composable
 fun GameTableScreen(
@@ -101,7 +102,9 @@ fun GameTableScreen(
 
     var mostrarConfirmacionSalir by remember { mutableStateOf(false) }
 
-    var cartasAlejadasVisibles by remember { mutableStateOf(true) }
+    var cartasAlejadasVisibles by remember {
+        mutableStateOf(false)
+    }
 
     DisposableEffect(idSala) {
         if (isPreview || salaPreview != null) {
@@ -199,6 +202,17 @@ fun GameTableScreen(
 
     val cimaDscarte = salaActual.mazoDescarte.lastOrNull()
     val context = LocalContext.current
+
+    val configuration = LocalConfiguration.current
+
+    val interfazCompactaPorEscala =
+        configuration.screenHeightDp < 720
+
+    val paddingInferiorJugadorLocal =
+        if (interfazCompactaPorEscala) 12.dp else 40.dp
+
+    val offsetPozosCentralesY =
+        if (interfazCompactaPorEscala) (-42).dp else 0.dp
 
     val descarteEspontaneoFirebase = salaActual.descarteEspontaneoAnimando
     val descarteFreeFirebase = salaActual.descarteFreeAnimando
@@ -397,7 +411,64 @@ fun GameTableScreen(
     val ultimasDosDescarte = salaActual.mazoDescarte
         .takeLast(2)
         .map { it.valor to mappingPalo(it.palo) }
-    val mostrarContador = salaActual.timestampInicioContador > 0L
+
+    val mostrarVisorDescarteFlotante =
+        estadoTurno.esMiTurno &&
+                (
+                        mostrarSelectorComodin ||
+                                mostrarHistorialJugadas ||
+                                mostrarConfirmacionSalir ||
+
+                                // Panel de carta en mano:
+                                // carta sin poder, carta con acciones, comodín antes de definir valor.
+                                yo.cartaEnMano != null ||
+
+                                // Poderes activos del jugador en turno.
+                                estadoPoder.hayPoderActivo ||
+                                estadoPoder.estaEspiando ||
+
+                                // Selecciones especiales del jugador en turno.
+                                seleccionCambioPropioActiva ||
+                                seleccionCartaParaEspiadoActiva ||
+                                seleccionCartaParaAdelantadoActiva ||
+                                seleccionVoyObjetivoActiva ||
+                                seleccionVoyEntregaActiva ||
+
+                                // Flujo de robar descarte por adelantado.
+                                adelantadoPendienteLocal != null
+                        )
+
+    val duracionMemorizacionMs = 15_000L
+
+    val tiempoMemorizacionTranscurrido =
+        if (salaActual.timestampInicioContador > 0L) {
+            System.currentTimeMillis() - salaActual.timestampInicioContador
+        } else {
+            Long.MAX_VALUE
+        }
+
+    val mostrarContador =
+        salaActual.timestampInicioContador > 0L &&
+                tiempoMemorizacionTranscurrido in 0L until duracionMemorizacionMs
+
+    LaunchedEffect(
+        salaActual.partidaId,
+        salaActual.timestampInicioContador
+    ) {
+        cartasAlejadasVisibles =
+            salaActual.timestampInicioContador > 0L &&
+                    System.currentTimeMillis() - salaActual.timestampInicioContador < duracionMemorizacionMs
+
+        if (cartasAlejadasVisibles) {
+            val restante =
+                duracionMemorizacionMs -
+                        (System.currentTimeMillis() - salaActual.timestampInicioContador)
+
+            delay(restante.coerceAtLeast(0L))
+            cartasAlejadasVisibles = false
+        }
+    }
+
 
     // Carta espiada actual
     val cartaEspiada = if (estadoPoder.estaEspiando) {
@@ -705,7 +776,9 @@ fun GameTableScreen(
 
             // 2. Jugador local
             Box(
-                modifier = Modifier.fillMaxSize().padding(bottom = 40.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = paddingInferiorJugadorLocal),
                 contentAlignment = Alignment.BottomCenter
             ) {
                 AreaJugador(
@@ -1018,7 +1091,12 @@ fun GameTableScreen(
 
             // 3. Mazos centrales
             val (mazoAlign, esHoriz, _) = obtenerConfiguracionMazos(oponentes.size)
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = mazoAlign) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .offset(y = offsetPozosCentralesY),
+                contentAlignment = Alignment.Center
+            ) {
                 MazosCentralesInteractivos(
                     esHorizontal = esHoriz,
                     cartasDescarteVisibles = ultimasDosDescarte,
@@ -1630,6 +1708,15 @@ fun GameTableScreen(
                     }
                 )
             }
+
+            if (mostrarVisorDescarteFlotante) {
+                VisorDescarteSobreModal(
+                    cartasDescarteVisibles = ultimasDosDescarte,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(top = 48.dp, start = 16.dp)
+                )
+            }
         }
 
 
@@ -1651,6 +1738,74 @@ fun GameTableScreen(
                     },
                     onDismiss = { mostrarSelectorComodin = false }
                 )
+            }
+        }
+        if (mostrarVisorDescarteFlotante && mostrarSelectorComodin) {
+            Box(
+                modifier = Modifier.fillMaxSize()
+            ) {
+                VisorDescarteSobreModal(
+                    cartasDescarteVisibles = ultimasDosDescarte,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(top = 48.dp, start = 16.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VisorDescarteSobreModal(
+    cartasDescarteVisibles: List<Pair<String, Palo>>,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .background(
+                color = Color(0xFF081B0B).copy(alpha = 0.94f),
+                shape = RoundedCornerShape(14.dp)
+            )
+            .border(
+                width = 1.dp,
+                color = Color(0xFF2196F3),
+                shape = RoundedCornerShape(14.dp)
+            )
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "DESCARTE",
+                color = Color.White.copy(alpha = 0.85f),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Black
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (cartasDescarteVisibles.isEmpty()) {
+                    Text(
+                        text = "Vacío",
+                        color = Color.White.copy(alpha = 0.70f),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                } else {
+                    cartasDescarteVisibles.forEach { (valor, palo) ->
+                        CartaVisual(
+                            abierta = true,
+                            valor = valor,
+                            palo = palo,
+                            modifier = Modifier.size(38.dp, 54.dp)
+                        )
+                    }
+                }
             }
         }
     }
