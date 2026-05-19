@@ -166,6 +166,7 @@ object FirebaseManager {
         // La sala vuelve a estar disponible como lobby.
         actualizaciones["estaEnJuego"] = false
         actualizaciones["estaActiva"] = true
+        actualizaciones["jugadoresExpulsados"] = mapOf<String, Any>()
 
         // Estados generales de partida.
         actualizaciones["turnoActualId"] = ""
@@ -445,51 +446,48 @@ object FirebaseManager {
     }
 
     fun unirseASala(salaId: String, jugador: Jugador, onComplete: (Boolean) -> Unit) {
-        if (salaId.isBlank() || jugador.id.isBlank() || jugador.nombre.isBlank()) {
-            onComplete(false)
-            return
-        }
-
         val salaRef = salasRef.child(salaId)
 
-        salaRef.get().addOnSuccessListener { salaSnap ->
-            val sala = salaSnap.getValue(Sala::class.java)
+        salaRef.get()
+            .addOnSuccessListener { snapshot ->
+                val sala = snapshot.getValue(Sala::class.java)
 
-            val salaValida =
-                salaSnap.exists() &&
-                        salaSnap.child("nombreSala").exists() &&
-                        sala != null &&
-                        sala.estaActiva &&
-                        !sala.estaEnJuego &&
-                        sala.jugadores.size < 6
-
-            if (!salaValida) {
-                onComplete(false)
-                return@addOnSuccessListener
-            }
-
-            val jugadorConectado = jugador.copy(
-                conectado = true,
-                ultimaConexion = System.currentTimeMillis()
-            )
-
-            salaRef
-                .child("jugadores")
-                .child(jugador.id)
-                .setValue(jugadorConectado)
-                .addOnCompleteListener { task ->
-                    if (task.isSuccessful) {
-                        registrarPresenciaJugador(
-                            salaId = salaId,
-                            jugadorId = jugador.id
-                        )
-                    }
-
-                    onComplete(task.isSuccessful)
+                if (sala == null) {
+                    onComplete(false)
+                    return@addOnSuccessListener
                 }
-        }.addOnFailureListener {
-            onComplete(false)
-        }
+
+                val fueExpulsado =
+                    sala.jugadoresExpulsados[jugador.id] == true
+
+                if (fueExpulsado && sala.estaEnJuego) {
+                    onComplete(false)
+                    return@addOnSuccessListener
+                }
+
+                val jugadorConectado = jugador.copy(
+                    conectado = true,
+                    ultimaConexion = System.currentTimeMillis()
+                )
+
+                salaRef
+                    .child("jugadores")
+                    .child(jugador.id)
+                    .setValue(jugadorConectado)
+                    .addOnCompleteListener { task ->
+                        if (task.isSuccessful) {
+                            registrarPresenciaJugador(
+                                salaId = salaId,
+                                jugadorId = jugador.id
+                            )
+                        }
+
+                        onComplete(task.isSuccessful)
+                    }
+            }
+            .addOnFailureListener {
+                onComplete(false)
+            }
     }
 
     // ─────────────────────────────────────────

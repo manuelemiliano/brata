@@ -1522,10 +1522,11 @@ object GameActions {
             // No hay espacio dentro de las 4 cartas principales.
             // No se roba carta. Ahora sí cuenta como error.
             val nuevosErrores = (jugador.erroresDescarte + 1).coerceAtMost(3)
-            val quedaDescalificado = nuevosErrores >= 3
+            val quedaExpulsado = nuevosErrores >= 3
 
-            if (quedaDescalificado) {
-                moverJugadorDescalificadoAObservadorEnUpdates(
+
+            if (quedaExpulsado) {
+                expulsarJugadorPorTercerErrorEnUpdates(
                     updates = updates,
                     sala = sala,
                     jugadorId = jugadorId,
@@ -1544,7 +1545,7 @@ object GameActions {
             }
 
             onError(
-                if (quedaDescalificado) {
+                if (quedaExpulsado) {
                     "Tercer error: jugador descalificado"
                 } else {
                     "Error registrado: $nuevosErrores de 3"
@@ -2364,6 +2365,141 @@ object GameActions {
     private const val VOY_TIPO_ROBO_DESCARTE = "DESCARTE"
 
 
+    private fun expulsarJugadorPorTercerErrorEnUpdates(
+        updates: MutableMap<String, Any?>,
+        sala: Sala,
+        jugadorId: String,
+        mazoRobarBase: MutableList<Carta>
+    ) {
+        val jugador = sala.jugadores[jugadorId] ?: return
+
+        val cartasMesa = jugador.cartas
+            .mesaNormalizadaACuatroCasillas()
+            .filterNot { it.esSlotVacio() }
+            .map {
+                it.limpiarMetaDescarteRobo()
+                    .copy(abierta = false)
+            }
+
+        val cartaEnMano = jugador.cartaEnMano
+            ?.limpiarMetaDescarteRobo()
+            ?.copy(abierta = false)
+
+        val cartasAReciclar = buildList {
+            addAll(cartasMesa)
+            if (cartaEnMano != null) {
+                add(cartaEnMano)
+            }
+        }
+
+        val nuevoMazoRobar = (mazoRobarBase + cartasAReciclar)
+            .shuffled()
+            .toMutableList()
+
+        // Sus cartas regresan al pozo.
+        updates["mazoRobar"] = nuevoMazoRobar
+
+        // Se elimina completamente de jugadores activos.
+        updates["jugadores/$jugadorId"] = null
+
+        // Se marca como expulsado de esta partida para impedir reingreso.
+        updates["jugadoresExpulsados/$jugadorId"] = true
+
+        // Si era su turno, avanzar al siguiente jugador activo.
+        if (sala.turnoActualId == jugadorId) {
+            val siguiente = siguienteTurno(jugadorId, sala)
+            updates["turnoActualId"] = if (siguiente == jugadorId) "" else siguiente
+        }
+
+        // Si tenía poder activo, se cancela.
+        if (sala.cartaPoderActiva?.jugadorId == jugadorId) {
+            updates["cartaPoderActiva"] = null
+        }
+
+        // Si tenía animaciones pendientes, se cancelan.
+        if (sala.cambioPropioAnimando?.ejecutorId == jugadorId) {
+            updates["cambioPropioAnimando"] = null
+        }
+
+        if (sala.swapAnimando?.ejecutorId == jugadorId) {
+            updates["swapAnimando"] = null
+        }
+
+        if (sala.descarteEspontaneoAnimando?.ejecutorId == jugadorId) {
+            updates["descarteEspontaneoAnimando"] = null
+        }
+
+        if (sala.descarteFreeAnimando?.ejecutorId == jugadorId) {
+            updates["descarteFreeAnimando"] = null
+        }
+
+        if (sala.espiaAnimando?.ejecutorId == jugadorId) {
+            updates["espiaAnimando"] = null
+        }
+
+        if (sala.entregaCartaEspiadoAnimando?.ejecutorId == jugadorId) {
+            updates["entregaCartaEspiadoAnimando"] = null
+        }
+
+        // Si estaba involucrado en VOY, se limpia.
+        val voy = sala.voyPendiente
+        if (
+            voy != null &&
+            (
+                    voy.jugadorRobandoId == jugadorId ||
+                            voy.reclamadoPorJugadorId == jugadorId ||
+                            voy.jugadorObjetivoId == jugadorId
+                    )
+        ) {
+            updates["voyPendiente"] = null
+        }
+
+        // Si había presionado BRATA, se cancela la última ronda.
+        if (sala.brataJugadorId == jugadorId) {
+            updates["brataActivada"] = false
+            updates["brataJugadorId"] = ""
+            updates["ventanaFinalRonda"] = null
+        }
+
+        // Limpiar cadena si lo estaba esperando o si participaba en ella.
+        val cadena = sala.cadenaDescarte
+        if (
+            cadena != null &&
+            (
+                    cadena.jugadorOrigenId == jugadorId ||
+                            cadena.turnoEsperadoId == jugadorId ||
+                            cadena.jugadoresQueDescartaron.containsKey(jugadorId)
+                    )
+        ) {
+            updates["cadenaDescarte"] = null
+        }
+
+        // Si era anfitrión, pasar host al siguiente jugador activo disponible.
+        if (jugador.esAnfitrion) {
+            val siguienteHost = sala.jugadores.values
+                .firstOrNull { it.id != jugadorId && !it.descalificado }
+
+            if (siguienteHost != null) {
+                updates["jugadores/${siguienteHost.id}/esAnfitrion"] = true
+            }
+        }
+
+        updates["jugadaActual"] = mapOf(
+            "jugadorId" to jugadorId,
+            "tipo" to "EXPULSADO",
+            "subaccion" to "Tercer error · salió de la partida",
+            "timestamp" to System.currentTimeMillis()
+        )
+
+        agregarHistorialJugadaEnUpdates(
+            updates = updates,
+            sala = sala,
+            jugadorId = jugadorId,
+            tipo = "EXPULSADO",
+            mensaje = "${nombreJugadorSeguro(sala, jugadorId)} cometió su tercer error y salió de la partida."
+        )
+    }
+
     private fun debeCompletarRoboOriginalDespuesDeVoy(
         voy: VoyPendiente,
         jugadorQueReclamoVoyId: String
@@ -2682,10 +2818,10 @@ object GameActions {
         }
 
         val nuevosErrores = (jugador.erroresDescarte + 1).coerceAtMost(3)
-        val quedaDescalificado = nuevosErrores >= 3
+        val quedaExpulsado = nuevosErrores >= 3
 
-        if (quedaDescalificado) {
-            moverJugadorDescalificadoAObservadorEnUpdates(
+        if (quedaExpulsado) {
+            expulsarJugadorPorTercerErrorEnUpdates(
                 updates = updates,
                 sala = sala,
                 jugadorId = jugadorId,
@@ -2704,8 +2840,8 @@ object GameActions {
         }
 
         onError(
-            if (quedaDescalificado) {
-                "VOY incorrecto: tercer error, jugador descalificado"
+            if (quedaExpulsado) {
+                "VOY incorrecto: tercer error, jugador fuera de la partida"
             } else {
                 "VOY incorrecto: error $nuevosErrores de 3"
             }

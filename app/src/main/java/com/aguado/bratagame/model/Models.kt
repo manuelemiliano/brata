@@ -151,6 +151,8 @@ data class Sala(
     // Observadores (sin límite)
     var observadores: Map<String, Observador> = emptyMap(),
 
+    var jugadoresExpulsados: Map<String, Boolean> = emptyMap(),
+
     // Estado de la partida
     var estaEnJuego: Boolean = false,
     var estaActiva: Boolean = true,
