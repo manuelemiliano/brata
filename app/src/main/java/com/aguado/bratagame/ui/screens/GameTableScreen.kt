@@ -182,6 +182,102 @@ fun GameTableScreen(
     val estadoTurno = TurnManager.calcularEstadoTurno(jugadorLocal.id, salaActual)
     val estadoPoder = CardPowerResolver.calcularEstadoPoder(jugadorLocal.id, salaActual)
 
+    val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+
+    val interfazCompactaPorEscala =
+        configuration.fontScale >= 1.15f || configuration.screenHeightDp < 720
+
+    val paddingInferiorJugadorLocal =
+        if (interfazCompactaPorEscala) 18.dp else 40.dp
+
+    /*
+     * En modo de elementos grandes los pozos deben subir solo un poco.
+     * Con -18.dp se encimaban con los juegos superiores en algunos dispositivos.
+     */
+    val offsetPozosCentralesY =
+        if (!interfazCompactaPorEscala) -8.dp else 0.dp
+
+    val descarteEspontaneoFirebase = salaActual.descarteEspontaneoAnimando
+    val descarteFreeFirebase = salaActual.descarteFreeAnimando
+    val entregaCartaEspiadoFirebase = salaActual.entregaCartaEspiadoAnimando
+
+    val duracionMemorizacionMs = 15_000L
+
+    var tiempoServidorAhora by remember(
+        salaActual.partidaId,
+        salaActual.timestampInicioContador
+    ) {
+        mutableStateOf(FirebaseManager.horaServidorAproximada())
+    }
+
+    val tiempoFinContador =
+        if (salaActual.timestampInicioContador > 0L) {
+            salaActual.timestampInicioContador + duracionMemorizacionMs
+        } else {
+            0L
+        }
+
+    LaunchedEffect(
+        salaActual.partidaId,
+        salaActual.timestampInicioContador
+    ) {
+        if (salaActual.timestampInicioContador <= 0L) {
+            tiempoServidorAhora = FirebaseManager.horaServidorAproximada()
+            return@LaunchedEffect
+        }
+
+        while (true) {
+            val ahoraServidor = FirebaseManager.horaServidorAproximada()
+            tiempoServidorAhora = ahoraServidor
+
+            if (ahoraServidor >= tiempoFinContador) {
+                break
+            }
+
+            delay(250L)
+        }
+    }
+
+    val mostrarContador =
+        salaActual.timestampInicioContador > 0L &&
+                tiempoServidorAhora < tiempoFinContador
+
+    /*
+     * Bloquea toda interacción mientras están visibles las cartas iniciales.
+     * Evita BRATA, robar del pozo, robar descarte y seleccionar cartas durante
+     * la cuenta regresiva de memorización.
+     */
+    val bloqueoInicioPartida = mostrarContador
+
+    /*
+     * ContadorMemorizacion calcula internamente con System.currentTimeMillis().
+     * Como timestampInicioContador ahora viene del servidor, lo convertimos
+     * a su equivalente local usando el offset de Firebase.
+     */
+    val timestampInicioContadorLocal =
+        if (salaActual.timestampInicioContador > 0L) {
+            salaActual.timestampInicioContador - FirebaseManager.offsetServidorMs()
+        } else {
+            0L
+        }
+
+    LaunchedEffect(
+        salaActual.partidaId,
+        salaActual.timestampInicioContador,
+        mostrarContador
+    ) {
+        cartasAlejadasVisibles = mostrarContador
+
+        if (mostrarContador) {
+            val restante = tiempoFinContador - FirebaseManager.horaServidorAproximada()
+            delay(restante.coerceAtLeast(0L))
+            cartasAlejadasVisibles = false
+        } else {
+            cartasAlejadasVisibles = false
+        }
+    }
+
     val hayAnimacionCambioActiva =
         salaActual.swapAnimando != null ||
                 salaActual.cambioPropioAnimando != null
@@ -194,29 +290,15 @@ fun GameTableScreen(
                 seleccionVoyObjetivoActiva ||
                 seleccionVoyEntregaActiva ||
                 accionPoderEnProceso ||
-                hayAnimacionCambioActiva
+                hayAnimacionCambioActiva ||
+                bloqueoInicioPartida
 
     val bloquearInteraccionMesa =
         accionPoderEnProceso ||
-                hayAnimacionCambioActiva
+                hayAnimacionCambioActiva ||
+                bloqueoInicioPartida
 
     val cimaDscarte = salaActual.mazoDescarte.lastOrNull()
-    val context = LocalContext.current
-
-    val configuration = LocalConfiguration.current
-
-    val interfazCompactaPorEscala =
-        configuration.screenHeightDp < 720
-
-    val paddingInferiorJugadorLocal =
-        if (interfazCompactaPorEscala) 12.dp else 40.dp
-
-    val offsetPozosCentralesY =
-        if (interfazCompactaPorEscala) (-42).dp else 0.dp
-
-    val descarteEspontaneoFirebase = salaActual.descarteEspontaneoAnimando
-    val descarteFreeFirebase = salaActual.descarteFreeAnimando
-    val entregaCartaEspiadoFirebase = salaActual.entregaCartaEspiadoAnimando
 
     LaunchedEffect(
         estadoPoder.hayPoderActivo,
@@ -437,38 +519,6 @@ fun GameTableScreen(
                                 // Flujo de robar descarte por adelantado.
                                 adelantadoPendienteLocal != null
                         )
-
-    val duracionMemorizacionMs = 15_000L
-
-    val tiempoMemorizacionTranscurrido =
-        if (salaActual.timestampInicioContador > 0L) {
-            System.currentTimeMillis() - salaActual.timestampInicioContador
-        } else {
-            Long.MAX_VALUE
-        }
-
-    val mostrarContador =
-        salaActual.timestampInicioContador > 0L &&
-                tiempoMemorizacionTranscurrido in 0L until duracionMemorizacionMs
-
-    LaunchedEffect(
-        salaActual.partidaId,
-        salaActual.timestampInicioContador
-    ) {
-        cartasAlejadasVisibles =
-            salaActual.timestampInicioContador > 0L &&
-                    System.currentTimeMillis() - salaActual.timestampInicioContador < duracionMemorizacionMs
-
-        if (cartasAlejadasVisibles) {
-            val restante =
-                duracionMemorizacionMs -
-                        (System.currentTimeMillis() - salaActual.timestampInicioContador)
-
-            delay(restante.coerceAtLeast(0L))
-            cartasAlejadasVisibles = false
-        }
-    }
-
 
     // Carta espiada actual
     val cartaEspiada = if (estadoPoder.estaEspiando) {
@@ -795,7 +845,7 @@ fun GameTableScreen(
                     esTurnoActual = estadoTurno.esMiTurno,
                     esJugadorQuePresionoBrata = salaActual.brataActivada &&
                             salaActual.brataJugadorId == yo.id,
-                    mostrarBotonBrata = mostrarBrataLocal,
+                    mostrarBotonBrata = mostrarBrataLocal && !bloqueoInicioPartida,
                     espiaAnimando = espiaAnimandoFirebase,
                     onCartaSeleccionadaVisualmente = { carta ->
                         marcarCartaSeleccionadaVisualmente(carta)
@@ -1090,54 +1140,57 @@ fun GameTableScreen(
             }
 
             // 3. Mazos centrales
+            // 3. Mazos centrales
             val (mazoAlign, esHoriz, _) = obtenerConfiguracionMazos(oponentes.size)
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .offset(y = offsetPozosCentralesY),
-                contentAlignment = Alignment.Center
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = mazoAlign
             ) {
-                MazosCentralesInteractivos(
-                    esHorizontal = esHoriz,
-                    cartasDescarteVisibles = ultimasDosDescarte,
+                Box(
+                    modifier = Modifier.offset(y = offsetPozosCentralesY)
+                ) {
+                    MazosCentralesInteractivos(
+                        esHorizontal = esHoriz,
+                        cartasDescarteVisibles = ultimasDosDescarte,
 
-                    puedeRobarDelPozo = !jugadorLocalDescalificado &&
-                            estadoTurno.puedeRobar &&
-                            voyPendienteLocal == null &&
-                            !ventanaFinalActiva &&
-                            !hayPoderBloqueante,
+                        puedeRobarDelPozo = !jugadorLocalDescalificado &&
+                                estadoTurno.puedeRobar &&
+                                voyPendienteLocal == null &&
+                                !ventanaFinalActiva &&
+                                !hayPoderBloqueante,
 
-                    puedeRobarDelDescarte = !jugadorLocalDescalificado &&
-                            estadoTurno.puedeRobarDelDescarte &&
-                            voyPendienteLocal == null &&
-                            !ventanaFinalActiva &&
-                            !hayPoderBloqueante,
+                        puedeRobarDelDescarte = !jugadorLocalDescalificado &&
+                                estadoTurno.puedeRobarDelDescarte &&
+                                voyPendienteLocal == null &&
+                                !ventanaFinalActiva &&
+                                !hayPoderBloqueante,
 
-                    onRobarPozo = {
-                        GameActions.solicitarRoboDelPozoConVoy(
-                            salaId = idSala,
-                            jugadorId = jugadorLocal.id,
-                            sala = salaActual
-                        ) { msg ->
-                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        onRobarPozo = {
+                            GameActions.solicitarRoboDelPozoConVoy(
+                                salaId = idSala,
+                                jugadorId = jugadorLocal.id,
+                                sala = salaActual
+                            ) { msg ->
+                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        onRobarDescarte = {
+                            GameActions.solicitarRoboDelDescarteConVoy(
+                                salaId = idSala,
+                                jugadorId = jugadorLocal.id,
+                                sala = salaActual
+                            ) { msg ->
+                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        onCentroDescarteMedido = { centro ->
+                            centroDescarteEnRaiz = centro
+                        },
+                        onCentroPenultimaDescarteMedido = { centro ->
+                            centroPenultimaDescarteEnRaiz = centro
                         }
-                    },
-                    onRobarDescarte = {
-                        GameActions.solicitarRoboDelDescarteConVoy(
-                            salaId = idSala,
-                            jugadorId = jugadorLocal.id,
-                            sala = salaActual
-                        ) { msg ->
-                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    onCentroDescarteMedido = { centro ->
-                        centroDescarteEnRaiz = centro
-                    },
-                    onCentroPenultimaDescarteMedido = { centro ->
-                        centroPenultimaDescarteEnRaiz = centro
-                    }
-                )
+                    )
+                }
             }
 
             // El indicador de turno ahora se muestra junto al área del jugador local,
@@ -1440,7 +1493,7 @@ fun GameTableScreen(
             // FIX 2: al terminar voltea las cartas alejadas
             if (mostrarContador) {
                 ContadorMemorizacion(
-                    timestampInicio = salaActual.timestampInicioContador,
+                    timestampInicio = timestampInicioContadorLocal,
                     onTiempoAgotado = {
                         cartasAlejadasVisibles = false
                     }
@@ -3776,154 +3829,4 @@ private fun CartaCambioPropioADescarteAnimation(
             }
         }
     }
-}
-/**
- * Rota el punto [punto] alrededor de [pivote] por [grados].
- * Usado para corregir positionInRoot() que ignora Modifier.rotate().
- */
-
-
-// ─────────────────────────────────────────────
-// PREVIEW
-// ─────────────────────────────────────────────
-
-@androidx.compose.ui.tooling.preview.Preview(showBackground = true, widthDp = 360, heightDp = 760)
-@Composable
-fun GameTablePreview() {
-    val cartasPrueba = listOf(
-        Carta(valor = "7", palo = "corazones"),
-        Carta(valor = "K", palo = "picas"),
-        Carta(valor = "A", palo = "treboles"),
-        Carta(valor = "4", palo = "diamantes")
-    )
-    val yo = Jugador(id = "1", nombre = "Manolo", cartas = cartasPrueba)
-    val op1 = Jugador(id = "2", nombre = "Ramon", cartas = cartasPrueba)
-    val op2 = Jugador(id = "3", nombre = "Elena", cartas = cartasPrueba)
-    GameTableScreen(
-        jugadorLocal = yo,
-        idSala = "test",
-        onSalir = {},
-        salaPreview = Sala(
-            id = "test",
-            jugadores = mapOf("1" to yo, "2" to op1, "3" to op2),
-            turnoActualId = "1"
-        )
-    )
-}
-// Cartas de prueba reutilizables
-private val cartasPrueba = listOf(
-    Carta(valor = "7", palo = "corazones"),
-    Carta(valor = "K", palo = "picas"),
-    Carta(valor = "A", palo = "treboles"),
-    Carta(valor = "4", palo = "diamantes")
-)
-
-private fun jugador(id: String, nombre: String, esAnfitrion: Boolean = false) =
-    Jugador(id = id, nombre = nombre, cartas = cartasPrueba, esAnfitrion = esAnfitrion)
-
-private fun salaConJugadores(vararg jugadores: Jugador) = Sala(
-    id = "preview",
-    nombreSala = "Mesa Preview",
-    jugadores = jugadores.associateBy { it.id },
-    turnoActualId = jugadores.first().id
-)
-
-// ── 2 JUGADORES (yo + 1 oponente) ─────────────
-// Oponente: TopCenter rotado 180°
-
-@Preview(showBackground = true, widthDp = 360, heightDp = 760, name = "Mesa 2 jugadores")
-@Composable
-fun Preview2Jugadores() {
-    val yo = jugador("1", "Tú", esAnfitrion = true)
-    val op1 = jugador("2", "Ramon")
-    GameTableScreen(
-        jugadorLocal = yo,
-        idSala = "preview",
-        onSalir = {},
-        salaPreview = salaConJugadores(yo, op1)
-    )
-}
-
-// ── 3 JUGADORES (yo + 2 oponentes) ────────────
-// Op1: CenterStart rotado 90°
-// Op2: CenterEnd rotado 270°
-
-@Preview(showBackground = true, widthDp = 360, heightDp = 760, name = "Mesa 3 jugadores")
-@Composable
-fun Preview3Jugadores() {
-    val yo = jugador("1", "Tú", esAnfitrion = true)
-    val op1 = jugador("2", "Ramon")
-    val op2 = jugador("3", "Elena")
-    GameTableScreen(
-        jugadorLocal = yo,
-        idSala = "preview",
-        onSalir = {},
-        salaPreview = salaConJugadores(yo, op1, op2)
-    )
-}
-
-// ── 4 JUGADORES (yo + 3 oponentes) ────────────
-// Op1: BiasAlignment(-0.6, -1) rotado 135°
-// Op2: TopCenter rotado 180°
-// Op3: BiasAlignment(+0.6, -1) rotado 225°
-
-@Preview(showBackground = true, widthDp = 360, heightDp = 760, name = "Mesa 4 jugadores")
-@Composable
-fun Preview4Jugadores() {
-    val yo = jugador("1", "Tú", esAnfitrion = true)
-    val op1 = jugador("2", "Ramon")
-    val op2 = jugador("3", "Elena")
-    val op3 = jugador("4", "Pedro")
-    GameTableScreen(
-        jugadorLocal = yo,
-        idSala = "preview",
-        onSalir = {},
-        salaPreview = salaConJugadores(yo, op1, op2, op3)
-    )
-}
-
-// ── 5 JUGADORES (yo + 4 oponentes) ────────────
-// Op1: CenterStart rotado 90°
-// Op2: BiasAlignment(-0.3, -1) rotado 150°
-// Op3: BiasAlignment(+0.3, -1) rotado 210°
-// Op4: CenterEnd rotado 270°
-
-@Preview(showBackground = true, widthDp = 360, heightDp = 760, name = "Mesa 5 jugadores")
-@Composable
-fun Preview5Jugadores() {
-    val yo = jugador("1", "Tú", esAnfitrion = true)
-    val op1 = jugador("2", "Ramon")
-    val op2 = jugador("3", "Elena")
-    val op3 = jugador("4", "Pedro")
-    val op4 = jugador("5", "Sofia")
-    GameTableScreen(
-        jugadorLocal = yo,
-        idSala = "preview",
-        onSalir = {},
-        salaPreview = salaConJugadores(yo, op1, op2, op3, op4)
-    )
-}
-
-// ── 6 JUGADORES (yo + 5 oponentes) ────────────
-// Op1: CenterStart rotado 90°
-// Op2: BiasAlignment(-0.6, -1) rotado 135°
-// Op3: TopCenter rotado 180°
-// Op4: BiasAlignment(+0.6, -1) rotado 225°
-// Op5: CenterEnd rotado 270°
-
-@Preview(showBackground = true, widthDp = 360, heightDp = 760, name = "Mesa 6 jugadores")
-@Composable
-fun Preview6Jugadores() {
-    val yo = jugador("1", "Tú", esAnfitrion = true)
-    val op1 = jugador("2", "Ramon")
-    val op2 = jugador("3", "Elena")
-    val op3 = jugador("4", "Pedro")
-    val op4 = jugador("5", "Sofia")
-    val op5 = jugador("6", "Carlos")
-    GameTableScreen(
-        jugadorLocal = yo,
-        idSala = "preview",
-        onSalir = {},
-        salaPreview = salaConJugadores(yo, op1, op2, op3, op4, op5)
-    )
 }

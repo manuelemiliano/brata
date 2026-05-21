@@ -5,6 +5,7 @@ import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
+import com.google.firebase.database.ServerValue
 import com.google.firebase.database.ktx.database
 import com.google.firebase.ktx.Firebase
 import com.aguado.bratagame.EntregaCartaEspiadoAnimando
@@ -17,6 +18,31 @@ object FirebaseManager {
     private val database: FirebaseDatabase by lazy { Firebase.database }
     private val salasRef by lazy { database.getReference("salas") }
     private val connectedRef by lazy { database.getReference(".info/connected") }
+
+    private val serverTimeOffsetRef by lazy {
+        database.getReference(".info/serverTimeOffset")
+    }
+
+    @Volatile
+    private var serverTimeOffsetMs: Long = 0L
+
+    init {
+        serverTimeOffsetRef.addValueEventListener(object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                serverTimeOffsetMs = snapshot.getValue(Long::class.java) ?: 0L
+            }
+
+            override fun onCancelled(error: DatabaseError) = Unit
+        })
+    }
+
+    fun horaServidorAproximada(): Long {
+        return System.currentTimeMillis() + serverTimeOffsetMs
+    }
+
+    fun offsetServidorMs(): Long {
+        return serverTimeOffsetMs
+    }
 
     // ─────────────────────────────────────────
     // INICIAR PARTIDA
@@ -108,7 +134,7 @@ object FirebaseManager {
 
         // 5. Timestamp para el contador de 15 segundos
         // Todos los clientes calculan el tiempo restante desde este valor
-        actualizaciones["timestampInicioContador"] = System.currentTimeMillis()
+        actualizaciones["timestampInicioContador"] = ServerValue.TIMESTAMP
 
         // 6. Primer turno: el anfitrión
         val anfitrion = jugadores.firstOrNull { it.esAnfitrion } ?: jugadores.first()
