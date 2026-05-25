@@ -4,6 +4,7 @@ import com.aguado.bratagame.Carta
 import com.aguado.bratagame.Sala
 import com.aguado.bratagame.TipoPoder
 import com.aguado.bratagame.esSlotVacio
+import com.aguado.bratagame.mesaNormalizadaACuatroCasillas
 
 // ─────────────────────────────────────────────
 // ACCIONES DISPONIBLES EN EL PANEL DE MANO
@@ -59,7 +60,24 @@ object GameRules {
         ultimaCartaDescarte: Carta?,
         segundaCartaDescarte: Carta?,   // la que está debajo de la última
         esComodinPropio: Boolean,       // true si se robó del descarte siendo comodín
-        permitirDescarteFree: Boolean = cartaEnMano.origenRobo == "POZO"
+        permitirDescarteFree: Boolean = cartaEnMano.origenRobo == "POZO",
+
+        // ─────────────────────────────────────────
+        // Contexto para validar si el poder es ejecutable.
+        //
+        // Sin estos parámetros la función mantiene su comportamiento previo
+        // (siempre ofrece ACTIVAR_PODER si la carta tiene poder), para no
+        // romper callers existentes.
+        //
+        // Cuando sí vienen, se aplica la regla:
+        //  - CAMBIAR_VIENDO requiere ≥1 carta ajena y ≥2 cartas en mesa total.
+        //  - CAMBIAR_SIN_VER requiere ≥2 cartas en mesa total (incluyendo ejecutor).
+        //  - ESPIAR y comodín no se validan aquí.
+        //
+        // Si la condición no se cumple, ACTIVAR_PODER NO se agrega a la lista.
+        // ─────────────────────────────────────────
+        sala: Sala? = null,
+        jugadorEjecutorId: String? = null
     ): List<AccionMano> {
 
         // Caso especial: COMODÍN robado del pozo normal
@@ -78,10 +96,18 @@ object GameRules {
         acciones.add(AccionMano.DESCARTAR)
         acciones.add(AccionMano.CAMBIAR)
 
-        // Agregar poder si la carta lo tiene
+        // Agregar poder si la carta lo tiene y es ejecutable en la mesa actual
         val poder = obtenerPoder(cartaEnMano)
         if (poder != TipoPoder.NINGUNO) {
-            acciones.add(AccionMano.ACTIVAR_PODER)
+            val poderEsEjecutable = poderEsEjecutableEnMesa(
+                poder = poder,
+                sala = sala,
+                jugadorEjecutorId = jugadorEjecutorId
+            )
+
+            if (poderEsEjecutable) {
+                acciones.add(AccionMano.ACTIVAR_PODER)
+            }
         }
 
         // ── Regla de descarte free ──────────────
@@ -200,5 +226,66 @@ object GameRules {
             "JKR" -> 20
             else -> carta.valor.toIntOrNull() ?: 0 // 3-10 valen su número
         }
+    }
+
+    // ─────────────────────────────────────────
+    // VALIDACIÓN: ¿el poder es ejecutable en el estado actual de la mesa?
+    //
+    // Solo aplica a CAMBIAR_VIENDO y CAMBIAR_SIN_VER.
+    // Para ESPIAR y otros poderes devuelve true (no se valida aquí).
+    //
+    // Si falta contexto (sala o jugadorEjecutorId nulos), devuelve true
+    // para preservar el comportamiento previo y no bloquear callers viejos.
+    // ─────────────────────────────────────────
+
+    private fun poderEsEjecutableEnMesa(
+        poder: TipoPoder,
+        sala: Sala?,
+        jugadorEjecutorId: String?
+    ): Boolean {
+        if (sala == null || jugadorEjecutorId.isNullOrBlank()) return true
+
+        return when (poder) {
+            TipoPoder.CAMBIAR_VIENDO -> {
+                // Requiere ≥1 carta ajena Y ≥2 cartas en mesa en total.
+                // La condición "ajena" sale del manual: "ve una carta ajena
+                // y la cambia por otra (suya o de otro)".
+                hayAlMenosUnaCartaAjenaEnMesa(sala, jugadorEjecutorId) &&
+                        cuentaCartasEnMesaTotal(sala) >= 2
+            }
+
+            TipoPoder.CAMBIAR_SIN_VER -> {
+                // Requiere ≥2 cartas en mesa en total. Las dos pueden ser del
+                // propio ejecutor; si tiene dos cartas propias puede intercambiarlas
+                // entre sí.
+                cuentaCartasEnMesaTotal(sala) >= 2
+            }
+
+            // No se restringe en este flujo.
+            TipoPoder.ESPIAR,
+            TipoPoder.DESCARTE_FREE_SELECCION,
+            TipoPoder.NINGUNO -> true
+        }
+    }
+
+    private fun cuentaCartasEnMesaTotal(sala: Sala): Int {
+        return sala.jugadores.values.sumOf { jugador ->
+            jugador.cartas
+                .mesaNormalizadaACuatroCasillas()
+                .count { !it.esSlotVacio() }
+        }
+    }
+
+    private fun hayAlMenosUnaCartaAjenaEnMesa(
+        sala: Sala,
+        jugadorEjecutorId: String
+    ): Boolean {
+        return sala.jugadores.values
+            .filter { it.id != jugadorEjecutorId }
+            .any { jugador ->
+                jugador.cartas
+                    .mesaNormalizadaACuatroCasillas()
+                    .any { !it.esSlotVacio() }
+            }
     }
 }

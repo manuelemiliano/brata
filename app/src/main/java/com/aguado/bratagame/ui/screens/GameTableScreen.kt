@@ -1233,7 +1233,9 @@ fun GameTableScreen(
                         ultimaCartaDescarte = ultimaDescarte,
                         segundaCartaDescarte = segundaDescarte,
                         esComodinPropio = esComodinPropio,
-                        permitirDescarteFree = cartaEnMano.origenRobo == "POZO"
+                        permitirDescarteFree = cartaEnMano.origenRobo == "POZO",
+                        sala = salaActual,
+                        jugadorEjecutorId = jugadorLocal.id
                     )
                 }
 
