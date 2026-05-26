@@ -125,7 +125,8 @@ data class Jugador(
     var erroresDescarte: Int = 0,
 
     // Al llegar a 3 errores, el jugador queda fuera de la ronda.
-    var descalificado: Boolean = false
+    var descalificado: Boolean = false,
+    var esBot: Boolean = false
 )
 
 // ─────────────────────────────────────────────

@@ -12,6 +12,8 @@ import com.aguado.bratagame.ui.screens.ResultScreen
 import java.util.UUID
 import android.content.Context
 import com.aguado.bratagame.game.TurnManager
+import com.aguado.bratagame.bot.BotOrchestrator
+import com.aguado.bratagame.bot.BotFirebaseRepository
 import android.app.ActivityManager
 import android.os.Build
 import androidx.core.content.ContextCompat
@@ -232,6 +234,11 @@ class MainActivity : ComponentActivity() {
                                     .remove("jugador_nombre")
                                     .apply()
 
+                                // Si soy host y me voy, los nodos hermanos del bot también deben limpiarse
+                                if (jugador.esAnfitrion) {
+                                    BotFirebaseRepository.limpiarTodoElEstadoDeBots(salaId)
+                                }
+
                                 jugadorActual = null
                                 idSalaActual = null
                                 salaActual = null
@@ -251,6 +258,28 @@ class MainActivity : ComponentActivity() {
                     val jugador = jugadorActual
                     val salaId = idSalaActual
                     if (jugador != null && salaId != null) {
+
+                        // ──────────────────────────────────────────
+                        // BOT ORCHESTRATOR
+                        // Solo el host instancia el orquestador. Si el host se va,
+                        // el siguiente anfitrión (promovido por FirebaseManager)
+                        // detecta el lock vencido (15 s) y retoma la ejecución de bots.
+                        // ──────────────────────────────────────────
+                        DisposableEffect(salaId, jugador.id, jugador.esAnfitrion) {
+                            val orquestador = if (jugador.esAnfitrion) {
+                                BotOrchestrator(
+                                    salaId = salaId,
+                                    hostId = jugador.id
+                                ).also { it.iniciar() }
+                            } else {
+                                null
+                            }
+
+                            onDispose {
+                                orquestador?.detener()
+                            }
+                        }
+
                         GameTableScreen(
                             jugadorLocal = jugador,
                             idSala = salaId,
@@ -261,6 +290,11 @@ class MainActivity : ComponentActivity() {
                                     .remove("sala_id")
                                     .remove("jugador_nombre")
                                     .apply()
+
+                                // Si soy host y me voy, los nodos hermanos del bot también deben limpiarse
+                                if (jugador.esAnfitrion) {
+                                    BotFirebaseRepository.limpiarTodoElEstadoDeBots(salaId)
+                                }
 
                                 jugadorActual = null
                                 idSalaActual = null
@@ -308,9 +342,14 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                             onIrAlInicio = {
+                                // Si soy host y me voy, los nodos hermanos del bot también deben limpiarse
                                 val salaId = idSalaActual
                                 if (salaId != null) {
                                     FirebaseManager.salirDeSala(salaId, jugador.id, jugador.esAnfitrion)
+
+                                    if (jugador.esAnfitrion) {
+                                        BotFirebaseRepository.limpiarTodoElEstadoDeBots(salaId)
+                                    }
                                 }
 
                                 prefs.edit()

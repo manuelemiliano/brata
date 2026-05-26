@@ -30,6 +30,9 @@ import com.aguado.bratagame.Sala
 import com.aguado.bratagame.R
 import com.aguado.bratagame.ui.theme.CasinoGold
 import com.aguado.bratagame.ui.theme.DarkCasinoGreen
+import com.aguado.bratagame.bot.ConfiguracionBotsCard
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
 @Composable
 fun LobbyScreen(
     jugadorLocal: Jugador,
@@ -38,6 +41,7 @@ fun LobbyScreen(
     onIniciarJuego: () -> Unit
 ) {
     var datosSala by remember { mutableStateOf<Sala?>(null) }
+    val context = LocalContext.current
     LaunchedEffect(Unit) {
         FirebaseManager.unirseASala(idSalaInicial, jugadorLocal) { exito ->
             if (!exito) {
@@ -126,9 +130,13 @@ fun LobbyScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = if (esYo) "${jugador.nombre} (Tú)" else jugador.nombre,
+                                text = when {
+                                    jugador.esBot -> "${jugador.nombre} (BOT)"
+                                    esYo -> "${jugador.nombre} (Tú)"
+                                    else -> jugador.nombre
+                                },
                                 color = Color.White,
-                                modifier = Modifier.weight(1f), // Toma el espacio sobrante sin empujar
+                                modifier = Modifier.weight(1f),
                                 maxLines = 1,
                                 style = MaterialTheme.typography.bodyLarge
                             )
@@ -145,7 +153,7 @@ fun LobbyScreen(
                                     )
                                 }
 
-                                if (soyHost && !esYo) {
+                                if (soyHost && !esYo && !jugador.esBot) {
                                     // Usamos una Box con tamaño fijo para el botón de eliminar
                                     Box(
                                         modifier = Modifier.size(40.dp),
@@ -173,6 +181,19 @@ fun LobbyScreen(
                         }
                     }
                 }
+            }
+
+            // ─── Configuración de bots (solo visible para el host) ───
+            datosSala?.let { sala ->
+                val soyHost = sala.jugadores[jugadorLocal.id]?.esAnfitrion == true
+                ConfiguracionBotsCard(
+                    salaActual = sala,
+                    salaId = idSalaInicial,
+                    soyHost = soyHost,
+                    onError = { mensaje ->
+                        Toast.makeText(context, mensaje, Toast.LENGTH_SHORT).show()
+                    }
+                )
             }
 
             val yo = datosSala?.jugadores?.get(jugadorLocal.id)

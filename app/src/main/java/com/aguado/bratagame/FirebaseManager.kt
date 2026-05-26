@@ -389,7 +389,9 @@ object FirebaseManager {
                         jugador.id.isNotBlank() && jugador.nombre.isNotBlank()
                     }
 
-                    val hayJugadoresConectados = jugadoresValidos.any { it.conectado }
+                    // Los bots cuentan como "conectados" siempre porque su presencia es lógica,
+                    // no física. Sin esto, una sala donde solo hay bots se borraría como fantasma.
+                    val hayJugadoresConectados = jugadoresValidos.any { it.conectado || it.esBot }
 
                     when {
                         sala.estaActiva && !sala.estaEnJuego && !hayJugadoresConectados -> {
