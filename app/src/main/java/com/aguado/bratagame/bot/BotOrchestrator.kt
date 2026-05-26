@@ -1,9 +1,12 @@
 package com.aguado.bratagame.bot
 
 import android.util.Log
+import com.aguado.bratagame.CartaEnMesa
 import com.aguado.bratagame.FirebaseManager
 import com.aguado.bratagame.Sala
+import com.aguado.bratagame.esSlotVacio
 import com.aguado.bratagame.game.GameActions
+import com.aguado.bratagame.mesaNormalizadaACuatroCasillas
 import com.google.firebase.database.ValueEventListener
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,6 +44,28 @@ class BotOrchestrator(
         private const val MARGEN_POST_ANIMACION_MS = 500L
         private const val TIMEOUT_TURNO_MS = 15_000L
         private const val TIMEOUT_ESPERA_CONDICION_MS = 5_000L
+
+        // Duración aproximada de la animación visual de swap completa.
+        // CardSwapAnimConfig: 3000ms de rebote en casilla + ~1600ms de cruce
+        // = ~4600ms. Agregamos margen para garantizar que la animación se vea
+        // completa antes que el bot confirme (que limpia swapAnimando).
+        // Si el bot confirma antes, la animación se corta visualmente.
+        private const val DURACION_ANIMACION_SWAP_MS = 4_800L
+
+        // Tiempo que el bot mantiene visible una carta espiada antes de
+        // decidir si la regresa o descarta. Alineado con duracionMs de
+        // EspiaAnimando en GameActions.espiarCarta (3000 ms).
+        private const val DURACION_VISUALIZACION_ESPIA_MS = 3_000L
+
+        // Duración total de animación de descarte free.
+        // DescarteFreeAnimando: 650ms viaje + 450ms rebote + 350ms margen
+        // que usa el LaunchedEffect del cliente humano.
+        private const val DURACION_ANIMACION_DESCARTE_FREE_MS = 1_500L
+
+        // Duración total de animación de cambio propio (mano ↔ propia).
+        // cambioPropioAnimando: 2000ms salto + 750ms viaje + 1000ms margen
+        // (igual al usado por el LaunchedEffect humano).
+        private const val DURACION_ANIMACION_CAMBIO_PROPIO_MS = 3_800L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -162,8 +187,10 @@ class BotOrchestrator(
             return
         }
 
-        if (sala.cartaPoderActiva != null) {
-            Log.d(TAG, "evaluarTurnoDeBot: hay poder activo, espero")
+        if (sala.cartaPoderActiva != null &&
+            sala.cartaPoderActiva?.jugadorId != jugadorEnTurno.id
+        ) {
+            Log.d(TAG, "evaluarTurnoDeBot: hay poder activo de otro, espero")
             return
         }
         if (sala.voyPendiente?.activo == true) {
@@ -252,13 +279,22 @@ class BotOrchestrator(
             }
             if (jugador.descalificado) return
 
-            if (sala.cartaPoderActiva != null ||
-                sala.voyPendiente?.activo == true ||
+            if (sala.voyPendiente?.activo == true ||
                 sala.adelantadoPendiente?.activo == true
             ) {
                 delay(300)
                 continue
             }
+
+            // Si hay poder activo y NO es mío, esperar
+            val poder = sala.cartaPoderActiva
+            if (poder != null && poder.jugadorId != botId) {
+                delay(300)
+                continue
+            }
+
+            // Si hay poder activo Y es mío, el cerebro decidirá durante el poder
+            // (decidirDuranteMiPoder en BotBrain). No retornamos acá.
 
             val memoria = memoriasPorBot[botId] ?: MemoriaBot()
             val vista = VistaParcialBuilder.construir(sala, botId)
@@ -313,7 +349,15 @@ class BotOrchestrator(
         Log.w(TAG, "Bot $botId alcanzó maxIteraciones=$maxIteraciones")
     }
 
-    private fun ejecutarDecision(
+    /**
+     * Ejecuta la DecisionBot. Devuelve una función de "espera" si se necesita
+     * confirmar el cambio antes de seguir, o null si el turno terminó.
+     *
+     * Es suspend para poder hacer secuencias como "iniciar animación →
+     * esperar 2.5s → confirmar" dentro del flujo principal del turno,
+     * manteniendo el lock tomado y la coherencia del bucle.
+     */
+    private suspend fun ejecutarDecision(
         botId: String,
         decision: DecisionBot,
         sala: Sala
@@ -363,16 +407,79 @@ class BotOrchestrator(
                     Log.w(TAG, "Bot $botId quiso cambiar pero no tiene carta en mano")
                     null
                 } else {
-                    GameActions.cambiarCartaEnManoPorPropia(
-                        salaId = salaId,
-                        jugadorId = botId,
-                        sala = sala,
-                        cartaEnMano = cartaEnMano,
-                        posicionDestino = decision.posicion
-                    ) { msg ->
-                        Log.w(TAG, "Bot $botId no pudo cambiar: $msg")
+                    // Construir la CartaEnMesa de la posición destino para
+                    // alimentar a iniciarAnimacionCambioPropio.
+                    val miJugador = sala.jugadores[botId]
+                    val miMesa = miJugador?.cartas?.mesaNormalizadaACuatroCasillas()
+                    val cartaDestino = miMesa?.getOrNull(decision.posicion)
+
+                    if (cartaDestino == null) {
+                        Log.w(TAG, "Bot $botId no encontró su carta destino en posición ${decision.posicion}")
+                        null
+                    } else if (cartaDestino.esSlotVacio()) {
+                        // Slot vacío: no hay carta visible para animar. Usamos el
+                        // camino instantáneo (igual que tomarCartaComoNuevaDeJuego).
+                        // No queda animación colgada porque cambiarCartaEnManoPorPropia
+                        // no escribe cambioPropioAnimando.
+                        GameActions.cambiarCartaEnManoPorPropia(
+                            salaId = salaId,
+                            jugadorId = botId,
+                            sala = sala,
+                            cartaEnMano = cartaEnMano,
+                            posicionDestino = decision.posicion
+                        ) { msg ->
+                            Log.w(TAG, "Bot $botId no pudo cambiar (slot vacío): $msg")
+                        }
+                        null
+                    } else {
+                        val cartaEnMesaDestino = CartaEnMesa(
+                            carta = cartaDestino,
+                            posicion = decision.posicion,
+                            propietarioId = botId
+                        )
+
+                        // 1. Iniciar animación visible
+                        GameActions.iniciarAnimacionCambioPropio(
+                            salaId = salaId,
+                            ejecutorId = botId,
+                            cartaSeleccionada = cartaEnMesaDestino,
+                            cartaEnMano = cartaEnMano,
+                            onError = { msg ->
+                                Log.w(TAG, "Bot $botId no pudo iniciar animación cambio propio: $msg")
+                            }
+                        )
+
+                        // 2. Esperar duración total: salto (2000ms) + viaje (750ms) + margen
+                        delay(DURACION_ANIMACION_CAMBIO_PROPIO_MS)
+
+                        // 3. Releer estado y confirmar
+                        val salaFresca = salaFlow.value
+                        val animFresca = salaFresca?.cambioPropioAnimando
+
+                        if (salaFresca != null &&
+                            animFresca != null &&
+                            animFresca.ejecutorId == botId
+                        ) {
+                            val cartaEnManoFresca = salaFresca.jugadores[botId]?.cartaEnMano
+                            if (cartaEnManoFresca != null && cartaEnManoFresca.id == animFresca.cartaEnManoId) {
+                                GameActions.confirmarCambioPropioAnimado(
+                                    salaId = salaId,
+                                    jugadorId = botId,
+                                    sala = salaFresca,
+                                    posicionDestino = animFresca.posicion,
+                                    cartaEnMano = cartaEnManoFresca,
+                                    animacionId = animFresca.id
+                                ) { msg ->
+                                    Log.w(TAG, "Bot $botId no pudo confirmar cambio propio: $msg")
+                                }
+                            } else {
+                                Log.w(TAG, "Bot $botId: estado inconsistente al confirmar cambio propio")
+                            }
+                        } else {
+                            Log.w(TAG, "Bot $botId: cambioPropioAnimando ya no activo al confirmar")
+                        }
+                        null
                     }
-                    null
                 }
             }
 
@@ -402,20 +509,286 @@ class BotOrchestrator(
             }
 
             is DecisionBot.RegresarCartaEspiada -> {
-                GameActions.regresarCartaEspiada(salaId, botId, sala)
+                // Si estoy regresando una carta tras un ESPIAR, espero a que
+                // la animación visual del espía termine (es de 3 segundos
+                // por defecto). Si no había espía activo (caso defensivo),
+                // el delay es inofensivo.
+                if (sala.cartaPoderActiva?.cartaEspiandoId?.isNotBlank() == true) {
+                    delay(DURACION_VISUALIZACION_ESPIA_MS)
+                }
+                // Releer sala fresca por si el estado cambió durante el delay
+                val salaFresca = salaFlow.value ?: sala
+                GameActions.regresarCartaEspiada(salaId, botId, salaFresca)
+
+                // CRÍTICO: limpiar la animación visual del espía.
+                // El LaunchedEffect del cliente solo la limpia si jugadorLocal
+                // es el ejecutor; cuando ejecuta el bot, nadie la limpia y
+                // queda colgada en Firebase para siempre.
+                GameActions.limpiarAnimacionEspia(salaId)
                 null
             }
 
-            // ── Decisiones de fases futuras ──
-            is DecisionBot.ActivarPoder,
-            is DecisionBot.ActivarDescarteFree,
+            // ── Activar poder según tipo ──
+            is DecisionBot.ActivarPoder -> {
+                val cartaEnMano = sala.jugadores[botId]?.cartaEnMano
+                if (cartaEnMano == null) {
+                    Log.w(TAG, "Bot $botId quiso activar poder pero no tiene carta en mano")
+                    null
+                } else {
+                    when (decision.tipoPoder) {
+                        com.aguado.bratagame.TipoPoder.ESPIAR.name -> {
+                            GameActions.activarPoderEspiar(salaId, botId, sala, cartaEnMano)
+                        }
+                        com.aguado.bratagame.TipoPoder.CAMBIAR_VIENDO.name -> {
+                            GameActions.activarPoderCambiarViendo(salaId, botId, sala, cartaEnMano)
+                        }
+                        com.aguado.bratagame.TipoPoder.CAMBIAR_SIN_VER.name -> {
+                            GameActions.activarPoderCambiarSinVer(salaId, botId, sala, cartaEnMano)
+                        }
+                        else -> {
+                            Log.w(TAG, "Bot $botId pidió poder desconocido: ${decision.tipoPoder}")
+                        }
+                    }
+                    // Esperar a que cartaPoderActiva quede registrada en Firebase
+                    val cond: (Sala) -> Boolean = { s ->
+                        s.cartaPoderActiva != null && s.cartaPoderActiva?.jugadorId == botId
+                    }
+                    cond
+                }
+            }
+
+            is DecisionBot.ActivarDescarteFree -> {
+                val cartaEnMano = sala.jugadores[botId]?.cartaEnMano
+                if (cartaEnMano == null) {
+                    Log.w(TAG, "Bot $botId quiso activar descarte free pero no tiene carta en mano")
+                    null
+                } else {
+                    GameActions.activarDescarteFree(salaId, botId, sala, cartaEnMano)
+                    // Esperar a que cartaPoderActiva sea DESCARTE_FREE_SELECCION
+                    val cond: (Sala) -> Boolean = { s ->
+                        val pa = s.cartaPoderActiva
+                        pa != null && pa.jugadorId == botId &&
+                                pa.tipoPoder == com.aguado.bratagame.TipoPoder.DESCARTE_FREE_SELECCION
+                    }
+                    cond
+                }
+            }
+
+            // ── Durante poder propio: seleccionar carta a espiar ──
+            is DecisionBot.EspiarCarta -> {
+                GameActions.espiarCarta(salaId, botId, sala, decision.cartaId) { msg ->
+                    Log.w(TAG, "Bot $botId no pudo espiar: $msg")
+                }
+                // Esperar a que cartaEspiandoId tenga el id correcto
+                val cond: (Sala) -> Boolean = { s ->
+                    s.cartaPoderActiva?.cartaEspiandoId == decision.cartaId
+                }
+                cond
+            }
+
+            is DecisionBot.EspiarCartaCambioViendo -> {
+                GameActions.espiarCartaCambioViendo(salaId, botId, sala, decision.cartaId) { msg ->
+                    Log.w(TAG, "Bot $botId no pudo espiar (cambio viendo): $msg")
+                }
+                val cond: (Sala) -> Boolean = { s ->
+                    s.cartaPoderActiva?.cartaEspiandoId == decision.cartaId
+                }
+                cond
+            }
+
+            // ── Durante poder propio: descartar carta espiada ──
+            is DecisionBot.DescartarCartaEspiada -> {
+                // El bot solo descarta la carta espiada cuando es PROPIA del bot
+                // y coincide con el valor activador (regla del As mejorada).
+                // Por simplicidad, delegamos a descartarCartaEspiadaPropia, que
+                // GameActions ya valida internamente.
+                val cartaEspiadaId = sala.cartaPoderActiva?.cartaEspiandoId
+                if (cartaEspiadaId.isNullOrBlank()) {
+                    Log.w(TAG, "Bot $botId quiso descartar espiada pero no hay cartaEspiandoId")
+                    null
+                } else {
+                    // Esperar a que termine la animación visible del espía
+                    delay(DURACION_VISUALIZACION_ESPIA_MS)
+                    val salaFresca = salaFlow.value ?: sala
+
+                    // Buscar la carta concreta en la mesa del bot
+                    val miJugador = salaFresca.jugadores[botId]
+                    val cartaEspiada = miJugador?.cartas
+                        ?.firstOrNull { it.id == cartaEspiadaId }
+
+                    if (cartaEspiada != null) {
+                        GameActions.descartarCartaEspiadaPropia(
+                            salaId = salaId,
+                            jugadorId = botId,
+                            sala = salaFresca,
+                            cartaEspiada = cartaEspiada
+                        ) { msg ->
+                            Log.w(TAG, "Bot $botId no pudo descartar espiada: $msg")
+                        }
+                    } else {
+                        // Fallback: regresar
+                        GameActions.regresarCartaEspiada(salaId, botId, salaFresca)
+                    }
+
+                    // Limpiar animación visual del espía (responsabilidad del bot
+                    // ya que el LaunchedEffect del cliente no la limpia para él).
+                    GameActions.limpiarAnimacionEspia(salaId)
+                    null
+                }
+            }
+
+            // ── Durante poder propio: confirmar swap CAMBIAR_VIENDO ──
+            is DecisionBot.ConfirmarSwapViendo -> {
+                // Patrón:
+                //   1. Iniciar animación visible (escribir swapAnimando).
+                //   2. Esperar duración de animación.
+                //   3. Confirmar el cambio leyendo el estado FRESCO de Firebase
+                //      (porque la animación puede haber cambiado swapAnimando, pero
+                //      cartaPoderActiva sigue activo hasta que confirmemos).
+                //
+                // Mantenemos esto SUSPEND dentro del flujo del turno para que
+                // el lock siga tomado y nadie más pueda intervenir.
+                val cartaA = GameActions.resolverCartaEnMesaPorId(
+                    sala = sala,
+                    propietarioId = decision.jugadorAId,
+                    cartaId = decision.cartaAId
+                )
+                val cartaB = GameActions.resolverCartaEnMesaPorId(
+                    sala = sala,
+                    propietarioId = decision.jugadorBId,
+                    cartaId = decision.cartaBId
+                )
+
+                if (cartaA != null && cartaB != null) {
+                    GameActions.iniciarAnimacionSwap(
+                        salaId = salaId,
+                        ejecutorId = botId,
+                        cartaA = cartaA,
+                        cartaB = cartaB,
+                        mostrarCartaA = true,
+                        mostrarCartaB = false
+                    )
+
+                    // Esperar la duración de la animación
+                    delay(DURACION_ANIMACION_SWAP_MS)
+
+                    // Releer el estado de la sala — el poder DEBE seguir activo
+                    val salaFresca = salaFlow.value
+                    val poderFresco = salaFresca?.cartaPoderActiva
+
+                    if (salaFresca != null &&
+                        poderFresco != null &&
+                        poderFresco.jugadorId == botId &&
+                        poderFresco.tipoPoder == com.aguado.bratagame.TipoPoder.CAMBIAR_VIENDO
+                    ) {
+                        GameActions.confirmarCambioViendo(
+                            salaId = salaId,
+                            jugadorId = botId,
+                            sala = salaFresca,
+                            jugadorAId = decision.jugadorAId,
+                            cartaAId = decision.cartaAId,
+                            jugadorBId = decision.jugadorBId,
+                            cartaBId = decision.cartaBId
+                        ) { msg ->
+                            Log.w(TAG, "Bot $botId no pudo confirmar cambio viendo: $msg")
+                        }
+                    } else {
+                        Log.w(
+                            TAG,
+                            "Bot $botId: poder ya no activo al confirmar viendo (poder=${poderFresco?.tipoPoder}). Limpiando animación."
+                        )
+                        GameActions.limpiarAnimacionSwap(salaId)
+                    }
+                    // CAMBIAR_VIENDO implica que el bot espió antes; limpiar
+                    // animación residual del espía si quedó colgada.
+                    GameActions.limpiarAnimacionEspia(salaId)
+                } else {
+                    Log.w(TAG, "Bot $botId: no encontré las cartas para swap viendo")
+                    GameActions.regresarCartaEspiada(salaId, botId, sala)
+                    GameActions.limpiarAnimacionEspia(salaId)
+                }
+                null
+            }
+
+            is DecisionBot.ConfirmarSwapSinVer -> {
+                val cartaA = GameActions.resolverCartaEnMesaPorId(
+                    sala = sala,
+                    propietarioId = decision.jugadorAId,
+                    cartaId = decision.cartaAId
+                )
+                val cartaB = GameActions.resolverCartaEnMesaPorId(
+                    sala = sala,
+                    propietarioId = decision.jugadorBId,
+                    cartaId = decision.cartaBId
+                )
+
+                if (cartaA != null && cartaB != null) {
+                    GameActions.iniciarAnimacionSwap(
+                        salaId = salaId,
+                        ejecutorId = botId,
+                        cartaA = cartaA,
+                        cartaB = cartaB,
+                        mostrarCartaA = false,
+                        mostrarCartaB = false
+                    )
+
+                    delay(DURACION_ANIMACION_SWAP_MS)
+
+                    val salaFresca = salaFlow.value
+                    val poderFresco = salaFresca?.cartaPoderActiva
+
+                    if (salaFresca != null &&
+                        poderFresco != null &&
+                        poderFresco.jugadorId == botId &&
+                        poderFresco.tipoPoder == com.aguado.bratagame.TipoPoder.CAMBIAR_SIN_VER
+                    ) {
+                        GameActions.confirmarCambioSinVer(
+                            salaId = salaId,
+                            jugadorId = botId,
+                            sala = salaFresca,
+                            jugadorAId = decision.jugadorAId,
+                            cartaAId = decision.cartaAId,
+                            jugadorBId = decision.jugadorBId,
+                            cartaBId = decision.cartaBId
+                        ) { msg ->
+                            Log.w(TAG, "Bot $botId no pudo confirmar cambio sin ver: $msg")
+                        }
+                    } else {
+                        Log.w(
+                            TAG,
+                            "Bot $botId: poder ya no activo al confirmar sin ver (poder=${poderFresco?.tipoPoder}). Limpiando animación."
+                        )
+                        GameActions.limpiarAnimacionSwap(salaId)
+                    }
+                } else {
+                    Log.w(TAG, "Bot $botId: no encontré las cartas para swap sin ver")
+                    GameActions.regresarCartaEspiada(salaId, botId, sala)
+                }
+                null
+            }
+
+            // ── Durante poder propio: confirmar descarte free ──
+            is DecisionBot.ConfirmarDescarteFree -> {
+                GameActions.confirmarDescarteFree(
+                    salaId = salaId,
+                    jugadorId = botId,
+                    sala = sala,
+                    posicionDescartada = decision.posicion
+                ) { msg ->
+                    Log.w(TAG, "Bot $botId no pudo confirmar descarte free: $msg")
+                }
+
+                // Esperar a que la animación de descarte free termine y limpiarla.
+                // El LaunchedEffect del cliente solo la limpia si jugadorLocal
+                // es el ejecutor; cuando ejecuta el bot, nadie la limpia.
+                // Duración: ~650ms viaje + ~450ms rebote + margen = 1450ms.
+                delay(DURACION_ANIMACION_DESCARTE_FREE_MS)
+                GameActions.limpiarAnimacionDescarteFree(salaId)
+                null
+            }
+
+            // ── Decisiones de fases futuras (3 / 4) ──
             is DecisionBot.RobarDescarteAdelantado,
-            is DecisionBot.EspiarCarta,
-            is DecisionBot.EspiarCartaCambioViendo,
-            is DecisionBot.DescartarCartaEspiada,
-            is DecisionBot.ConfirmarSwapViendo,
-            is DecisionBot.ConfirmarSwapSinVer,
-            is DecisionBot.ConfirmarDescarteFree,
             is DecisionBot.ReclamarVoy,
             is DecisionBot.SeleccionarObjetivoVoy,
             is DecisionBot.EntregarCartaVoy,
