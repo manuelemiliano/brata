@@ -490,9 +490,25 @@ fun GameTableScreen(
             espontaneoEnCurso = null
         }
     }
+    // Bug #1 fix: identificar la carta que viaja hacia el pozo por animación.
+    // No la quitamos de la pila (para no mover el punto de medición del destino),
+    // sino que la marcamos "oculta" y se renderiza invisible (alpha 0) mientras
+    // la animación viaja. Al limpiarse el flag, reaparece sola en su lugar exacto.
+    val cartaIdAnimandoHaciaPozo: String? =
+        salaActual.descarteEspontaneoAnimando?.cartaId?.takeIf { it.isNotBlank() }
+            ?: salaActual.descarteFreeAnimando?.cartaId?.takeIf { it.isNotBlank() }
+            ?: salaActual.cambioPropioAnimando?.cartaId?.takeIf { it.isNotBlank() }
+
     val ultimasDosDescarte = salaActual.mazoDescarte
         .takeLast(2)
-        .map { it.valor to mappingPalo(it.palo) }
+        .map { carta ->
+            CartaDescarteVisible(
+                id = carta.id,
+                valor = carta.valor,
+                palo = mappingPalo(carta.palo),
+                oculta = cartaIdAnimandoHaciaPozo != null && carta.id == cartaIdAnimandoHaciaPozo
+            )
+        }
 
     val mostrarVisorDescarteFlotante =
         estadoTurno.esMiTurno &&
@@ -1812,7 +1828,7 @@ fun GameTableScreen(
 
 @Composable
 private fun VisorDescarteSobreModal(
-    cartasDescarteVisibles: List<Pair<String, Palo>>,
+    cartasDescarteVisibles: List<CartaDescarteVisible>,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -1852,11 +1868,11 @@ private fun VisorDescarteSobreModal(
                         fontWeight = FontWeight.Bold
                     )
                 } else {
-                    cartasDescarteVisibles.forEach { (valor, palo) ->
+                    cartasDescarteVisibles.forEach { cartaVis ->
                         CartaVisual(
                             abierta = true,
-                            valor = valor,
-                            palo = palo,
+                            valor = cartaVis.valor,
+                            palo = cartaVis.palo,
                             modifier = Modifier.size(38.dp, 54.dp)
                         )
                     }
@@ -2796,7 +2812,7 @@ private fun CartaVisualInteractiva(
 @Composable
 fun MazosCentralesInteractivos(
     esHorizontal: Boolean,
-    cartasDescarteVisibles: List<Pair<String, Palo>>,
+    cartasDescarteVisibles: List<CartaDescarteVisible>,
     puedeRobarDelPozo: Boolean,
     puedeRobarDelDescarte: Boolean,
     onRobarPozo: () -> Unit,
@@ -2864,11 +2880,13 @@ fun MazosCentralesInteractivos(
                             .onGloballyPositioned { coords ->
                                 onCentroPenultimaDescarteMedido(coords.boundsInRoot().center)
                             }
+                            // Bug #1 fix: si la penúltima está siendo animada, invisible.
+                            .graphicsLayer { alpha = if (penultima.oculta) 0f else 1f }
                     ) {
                         CartaVisual(
                             abierta = true,
-                            valor = penultima.first,
-                            palo = penultima.second
+                            valor = penultima.valor,
+                            palo = penultima.palo
                         )
 
                         Box(
@@ -2889,8 +2907,14 @@ fun MazosCentralesInteractivos(
                             .onGloballyPositioned { coords ->
                                 onCentroDescarteMedido(coords.boundsInRoot().center)
                             }
+                            // Bug #1 fix: si la cima está siendo animada hacia el
+                            // pozo, la renderizamos invisible para evitar el doble.
+                            // El Box conserva su tamaño y posición, así la medición
+                            // de centroDescarteEnRaiz sigue siendo correcta y la
+                            // animación aterriza en el lugar exacto.
+                            .graphicsLayer { alpha = if (ultima.oculta) 0f else 1f }
                             .then(
-                                if (puedeRobarDelDescarte) {
+                                if (puedeRobarDelDescarte && !ultima.oculta) {
                                     Modifier.clickable { onRobarDescarte() }
                                 } else {
                                     Modifier
@@ -2899,11 +2923,11 @@ fun MazosCentralesInteractivos(
                     ) {
                         CartaVisual(
                             abierta = true,
-                            valor = ultima.first,
-                            palo = ultima.second
+                            valor = ultima.valor,
+                            palo = ultima.palo
                         )
 
-                        if (puedeRobarDelDescarte) {
+                        if (puedeRobarDelDescarte && !ultima.oculta) {
                             Box(
                                 modifier = Modifier
                                     .matchParentSize()
@@ -3167,6 +3191,15 @@ private fun manejarCartaTocada(
 // ─────────────────────────────────────────────
 // POSICIONAMIENTO
 // ─────────────────────────────────────────────
+
+/** Carta visible del pozo de descarte, con id para ocultarla selectivamente
+ *  durante animaciones (Bug #1 fix). */
+data class CartaDescarteVisible(
+    val id: String,
+    val valor: String,
+    val palo: Palo,
+    val oculta: Boolean = false
+)
 
 data class PosicionJugadorMesa(
     val alignment: Alignment,

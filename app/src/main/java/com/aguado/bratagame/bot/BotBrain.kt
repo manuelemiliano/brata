@@ -1,5 +1,6 @@
 package com.aguado.bratagame.bot
 
+import com.aguado.bratagame.AdelantadoPendiente
 import com.aguado.bratagame.Carta
 import com.aguado.bratagame.TipoPoder
 
@@ -33,10 +34,23 @@ object BotBrain {
         vista: VistaParcialSala
     ): DecisionBot {
 
+        // ── Caso 0 (PRIORIDAD ABSOLUTA): ──
+        // Soy el perjudicado por un adelantado. Debo responder antes de cualquier
+        // otra acción. Esto pasa cuando yo había activado ESPIAR o CAMBIAR_VIENDO
+        // y un rival descartó espontáneamente antes de que yo terminara mi poder.
+        val adelantado = vista.adelantadoPendiente
+        if (adelantado != null &&
+            adelantado.activo &&
+            adelantado.jugadorPerjudicadoId == vista.miId
+        ) {
+            return decidirRespuestaAdelantado(memoria, vista, adelantado)
+        }
+
         // ── Caso 1: NO es mi turno ──
-        // Fase 2B: aún no reaccionamos fuera de turno (sin VOY, sin espontáneo)
+        // Fase 3A: el bot puede actuar fuera de turno sólo para descarte
+        // espontáneo. VOY y otras reacciones llegan en fases posteriores.
         if (!vista.esMiTurno()) {
-            return DecisionBot.NoOp
+            return decidirFueraDeTurno(memoria, vista)
         }
 
         // ── Caso 2: hay poder activo propio ──
@@ -55,6 +69,343 @@ object BotBrain {
     }
 
     // ─────────────────────────────────────────
+    // FUERA DE TURNO (Fase 3A)
+    //
+    // El bot reacciona al estado de la mesa fuera de su turno.
+    // Por ahora solo descarte espontáneo. VOY y respuesta a adelantado
+    // llegan en Fases 3B/3C.
+    // ─────────────────────────────────────────
+
+    private fun decidirFueraDeTurno(
+        memoria: MemoriaBot,
+        vista: VistaParcialSala
+    ): DecisionBot {
+        // Si estoy descalificado o no estoy en sala, no actúo
+        if (vista.miId in vista.jugadoresDescalificados) return DecisionBot.NoOp
+
+        // ── PRIORIDAD: VOY pendiente ──
+        // Si hay un VOY activo, manejarlo es prioritario porque la ventana
+        // expira en pocos segundos. Distintos sub-casos según fase.
+        val voy = vista.voyPendiente
+        if (voy != null && voy.activo) {
+            return decidirVoy(memoria, vista, voy)
+        }
+
+        // No interfiero con un poder ajeno en curso (regla 5.4 - paciencia).
+        // Adelantarme generaría castigo (regla del adelantado).
+        if (vista.poderActivo != null) return DecisionBot.NoOp
+
+        // Adelantado pendiente sin resolver: esperar (caso del bot perjudicado
+        // se maneja en Caso 0 del entry point, antes de llegar aquí).
+        if (vista.adelantadoPendiente?.activo == true) return DecisionBot.NoOp
+
+        return decidirDescarteEspontaneoFueraDeTurno(memoria, vista)
+    }
+
+    // ─────────────────────────────────────────
+    // VOY (manual §6) — Fase 3C
+    //
+    // Tres sub-fases del VOY:
+    //
+    // 1. FASE "VENTANA" (≤2s): un jugador pidió robar pozo/descarte. Los demás
+    //    pueden reclamar VOY si detectan que ese jugador tenía una carta del
+    //    valor objetivo en mesa que olvidó descartar.
+    //
+    // 2. FASE "SELECCIONANDO_OBJETIVO": el reclamante elige qué carta del
+    //    robador (o de otro) "sacar" como prueba del VOY.
+    //
+    // 3. FASE "SELECCIONANDO_ENTREGA": tras VOY exitoso, el reclamante entrega
+    //    una carta propia al jugador que perdió la carta.
+    //
+    // Cuándo NO reclamamos:
+    //   - Yo soy el jugadorRobandoId (no puedo reclamar mi propio VOY).
+    //   - Yo ya soy el reclamante (en fase posterior debo actuar, no reclamar).
+    //   - No conozco con certeza ninguna carta ajena cuyo valor coincida.
+    //   - El objetivo es comodín no declarado (no aplica acá: valorObjetivo
+    //     siempre es un valor declarado, no "JKR" en bruto).
+    //
+    // Riesgo: si me equivoco al seleccionar objetivo, sufro castigo (carta
+    // extra del pozo). Por eso solo reclamamos con certeza alta.
+    // ─────────────────────────────────────────
+
+    private fun decidirVoy(
+        memoria: MemoriaBot,
+        vista: VistaParcialSala,
+        voy: com.aguado.bratagame.VoyPendiente
+    ): DecisionBot {
+        return when (voy.fase) {
+            "VENTANA" -> decidirVoyFaseVentana(memoria, vista, voy)
+            "SELECCIONANDO_OBJETIVO" -> decidirVoyFaseObjetivo(memoria, vista, voy)
+            "SELECCIONANDO_ENTREGA" -> decidirVoyFaseEntrega(memoria, vista, voy)
+            else -> DecisionBot.NoOp
+        }
+    }
+
+    private fun decidirVoyFaseVentana(
+        memoria: MemoriaBot,
+        vista: VistaParcialSala,
+        voy: com.aguado.bratagame.VoyPendiente
+    ): DecisionBot {
+        // Ya hay un reclamante → no compito
+        if (voy.reclamadoPorJugadorId.isNotBlank()) return DecisionBot.NoOp
+
+        // Verificar que tengo carta para entregar (validación previa de GameActions)
+        val tengoCartaParaEntregar = (0..3).any { pos ->
+            vista.miEstadoPosiciones[pos]?.ocupada == true
+        }
+        if (!tengoCartaParaEntregar) return DecisionBot.NoOp
+
+        // Valor objetivo: la cima del descarte al momento del intento de robo
+        val valorObjetivo = voy.valorObjetivo
+        if (valorObjetivo.isBlank() || valorObjetivo == "JKR") return DecisionBot.NoOp
+
+        // ¿Quién puede ser el "olvidadizo" que la reclamación va a denunciar?
+        // - Si yo soy el robador: cualquier OTRO jugador que tenga carta del
+        //   valor objetivo en mesa.
+        // - Si yo NO soy el robador: el robador es el sospechoso prioritario
+        //   (era él quien debió descartar antes de robar). Pero también vale
+        //   sobre cualquier otro rival que tenga ese valor.
+        //
+        // En ambos casos, busco entre TODOS los rivales activos (que no sea yo)
+        // si conozco con certeza una carta del valor objetivo en su mesa.
+        // Priorizo al robador si soy un observador (más probabilidad de ser
+        // su olvido real); si yo soy el robador, voy directo a cualquier otro.
+
+        val candidatos: List<String> = if (voy.jugadorRobandoId == vista.miId) {
+            // Soy el robador: busco en cualquier otro rival
+            vista.rivalesActivos()
+        } else {
+            // No soy el robador: priorizo al robador, luego al resto
+            val otrosRivales = vista.rivalesActivos().filter { it != voy.jugadorRobandoId }
+            listOf(voy.jugadorRobandoId) + otrosRivales
+        }
+
+        val hayCoincidenciaConocida = candidatos.any { rivalId ->
+            (0..3).any { pos ->
+                val conocida = BotMemory.obtenerCartaRivalConocida(memoria, rivalId, pos)
+                conocida != null &&
+                        conocida.valor == valorObjetivo &&
+                        conocida.valor != "JKR"
+            }
+        }
+
+        // Sin certeza → no reclamo (evitar castigo)
+        if (!hayCoincidenciaConocida) return DecisionBot.NoOp
+
+        return DecisionBot.ReclamarVoy
+    }
+
+    private fun decidirVoyFaseObjetivo(
+        memoria: MemoriaBot,
+        vista: VistaParcialSala,
+        voy: com.aguado.bratagame.VoyPendiente
+    ): DecisionBot {
+        // Solo el reclamante actúa en esta fase
+        if (voy.reclamadoPorJugadorId != vista.miId) return DecisionBot.NoOp
+
+        val valorObjetivo = voy.valorObjetivo
+        if (valorObjetivo.isBlank()) return DecisionBot.NoOp
+
+        // Buscar la carta concreta a "sacar" como prueba del VOY.
+        // GameActions valida que objetivo != yo, así que NUNCA apunto a mí mismo.
+        //
+        // Prioridad 1: el robador, si NO soy yo (era el sospechoso natural).
+        // Prioridad 2: cualquier otro rival activo con carta conocida del valor.
+        val rivalRobadorId = voy.jugadorRobandoId
+
+        if (rivalRobadorId != vista.miId) {
+            val posicionEnRobador = (0..3).firstOrNull { pos ->
+                val conocida = BotMemory.obtenerCartaRivalConocida(memoria, rivalRobadorId, pos)
+                conocida != null && conocida.valor == valorObjetivo && conocida.valor != "JKR"
+            }
+            if (posicionEnRobador != null) {
+                return DecisionBot.SeleccionarObjetivoVoy(
+                    rivalId = rivalRobadorId,
+                    posicion = posicionEnRobador
+                )
+            }
+        }
+
+        // Prioridad 2: cualquier rival activo que NO sea yo (ni el robador ya intentado)
+        val rivalesPosibles = vista.rivalesActivos().filter {
+            it != vista.miId && it != rivalRobadorId
+        }
+        rivalesPosibles.forEach { rivalId ->
+            val pos = (0..3).firstOrNull { pos ->
+                val conocida = BotMemory.obtenerCartaRivalConocida(memoria, rivalId, pos)
+                conocida != null && conocida.valor == valorObjetivo && conocida.valor != "JKR"
+            }
+            if (pos != null) {
+                return DecisionBot.SeleccionarObjetivoVoy(rivalId = rivalId, posicion = pos)
+            }
+        }
+
+        // Sin objetivo concreto: situación rara (reclamé sin saber). Abortar.
+        return DecisionBot.NoOp
+    }
+
+    private fun decidirVoyFaseEntrega(
+        memoria: MemoriaBot,
+        vista: VistaParcialSala,
+        voy: com.aguado.bratagame.VoyPendiente
+    ): DecisionBot {
+        // Solo el reclamante entrega
+        if (voy.reclamadoPorJugadorId != vista.miId) return DecisionBot.NoOp
+
+        // Estrategia: entregar la peor conocida (mayor valor en puntos) entre
+        // las posiciones ocupadas. Si no tengo conocidas, fallback a posición
+        // alejada ocupada (igual que decidirRespuestaAdelantado).
+        val posicionesOcupadas = (0..3).filter { pos ->
+            vista.miEstadoPosiciones[pos]?.ocupada == true
+        }
+
+        if (posicionesOcupadas.isEmpty()) {
+            // No debería ocurrir (validación previa exige tener carta).
+            // Fallback defensivo: posición 0; GameActions lo rechazará si está vacía.
+            return DecisionBot.EntregarCartaVoy(posicion = 0)
+        }
+
+        val mejorCandidata = posicionesOcupadas
+            .mapNotNull { pos ->
+                val conocida = BotMemory.obtenerMiPosicionConocida(memoria, pos)
+                if (conocida != null) {
+                    pos to valorPuntos(conocida.valor, conocida.palo)
+                } else {
+                    null
+                }
+            }
+            .maxByOrNull { (_, valor) -> valor }
+
+        if (mejorCandidata != null) {
+            return DecisionBot.EntregarCartaVoy(posicion = mejorCandidata.first)
+        }
+
+        // Fallback: posición más alejada
+        val ordenPreferencia = listOf(2, 3, 0, 1)
+        val posicionAlejada = ordenPreferencia.firstOrNull { it in posicionesOcupadas }
+            ?: posicionesOcupadas.first()
+
+        return DecisionBot.EntregarCartaVoy(posicion = posicionAlejada)
+    }
+
+
+    // ─────────────────────────────────────────
+    // DESCARTE ESPONTÁNEO (manual §5.3, §5.5, §7.1)
+    //
+    // Condiciones para que el bot dispare descarte espontáneo:
+    //   1. Existe carta en cima del descarte.
+    //   2. El bot tiene una posición propia CONOCIDA con valor coincidente.
+    //   3. El valor de esa carta es >= UMBRAL_DESCARTE_ESPONTANEO_MIN (3).
+    //   4. La carta no es comodín (regla 7.1: no se puede descartar JKR oculto).
+    //
+    // Si encuentra varias coincidencias, prioriza la de MAYOR valor (descartar
+    // la más cara primero).
+    // ─────────────────────────────────────────
+
+    private fun decidirDescarteEspontaneoFueraDeTurno(
+        memoria: MemoriaBot,
+        vista: VistaParcialSala
+    ): DecisionBot {
+        val cima = vista.ultimaCartaDescarte ?: return DecisionBot.NoOp
+
+        // Regla 7.1: no se puede descartar comodín espontáneamente.
+        // Pero SÍ podemos descartar contra una cima que es comodín, porque la
+        // cima ya tiene un valor declarado por su dueño. Nuestra protección
+        // es no descartar JKR PROPIO, no ignorar JKR como cima.
+        val valorCima = cima.valor
+
+        // Buscar carta propia conocida que coincida en valor con la cima
+        val candidatas = memoria.cartasPropiasConocidas
+            .filterValues { conocida ->
+                conocida.valor == valorCima &&
+                        conocida.valor != "JKR" &&   // no descartar comodín propio
+                        valorPuntos(conocida.valor, conocida.palo) >= UMBRAL_DESCARTE_ESPONTANEO_MIN
+            }
+
+        if (candidatas.isEmpty()) return DecisionBot.NoOp
+
+        // Verificar que la posición sigue ocupada en la vista (defensivo)
+        val candidatasValidas = candidatas.filter { (posStr, _) ->
+            val pos = posStr.toIntOrNull() ?: return@filter false
+            vista.miEstadoPosiciones[pos]?.ocupada == true
+        }
+
+        if (candidatasValidas.isEmpty()) return DecisionBot.NoOp
+
+        // Elegir la de mayor valor (descartar la más cara primero)
+        val (posStrElegida, _) = candidatasValidas.maxBy { (_, conocida) ->
+            valorPuntos(conocida.valor, conocida.palo)
+        }
+
+        val posicionElegida = posStrElegida.toIntOrNull() ?: return DecisionBot.NoOp
+
+        return DecisionBot.DescarteEspontaneo(posicion = posicionElegida)
+    }
+
+    // ─────────────────────────────────────────
+    // RESPUESTA AL ADELANTADO (manual §5.4, lado perjudicado)
+    //
+    // El bot había activado ESPIAR o CAMBIAR_VIENDO. Antes de que terminara
+    // de elegir/espiar, un rival descartó espontáneamente una carta del valor
+    // de su poder. Debe ceder una carta propia al adelantado.
+    //
+    // Estrategia de selección:
+    //   1. Mi peor posición CONOCIDA (mayor valor en puntos) → minimiza pérdida.
+    //   2. Si no tengo conocidas, posición más alejada ocupada (2 > 3 > 0 > 1).
+    //      Razón: las alejadas tienden a ser viejas (memorizadas al inicio o
+    //      en intercambios pasados) y, en promedio, tienen valor esperado de 6.
+    //      Las cercanas suelen ser más recientes (cartas que sustituí), que
+    //      tienden a tener valor controlado por mí. Cedo lo más viejo.
+    //   3. Si no hay ocupadas (caso patológico, no debería ocurrir), elijo 0.
+    //
+    // Validaciones: nunca elegir slot vacío. GameActions también lo rechazará,
+    // pero es mejor evitar el error.
+    // ─────────────────────────────────────────
+
+    private fun decidirRespuestaAdelantado(
+        memoria: MemoriaBot,
+        vista: VistaParcialSala,
+        @Suppress("UNUSED_PARAMETER") adelantado: AdelantadoPendiente
+    ): DecisionBot {
+        // Conjunto de posiciones propias ocupadas
+        val posicionesOcupadas = (0..3).filter { pos ->
+            vista.miEstadoPosiciones[pos]?.ocupada == true
+        }
+
+        if (posicionesOcupadas.isEmpty()) {
+            // Caso patológico: no debería ocurrir porque para haber activado
+            // un poder, el bot tenía al menos una carta en mano (que ya está
+            // descartada por el flujo de adelantado). Defendemos devolviendo
+            // posición 0 — GameActions lo rechazará si está vacía y abortará
+            // el flujo limpiamente.
+            return DecisionBot.ResolverAdelantado(posicionAEntregar = 0)
+        }
+
+        // Estrategia 1: peor posición conocida (entre las ocupadas)
+        val mejorCandidata = posicionesOcupadas
+            .mapNotNull { pos ->
+                val conocida = BotMemory.obtenerMiPosicionConocida(memoria, pos)
+                if (conocida != null) {
+                    pos to valorPuntos(conocida.valor, conocida.palo)
+                } else {
+                    null
+                }
+            }
+            .maxByOrNull { (_, valor) -> valor }
+
+        if (mejorCandidata != null) {
+            return DecisionBot.ResolverAdelantado(posicionAEntregar = mejorCandidata.first)
+        }
+
+        // Estrategia 2: posición más alejada ocupada (2 > 3 > 0 > 1)
+        val ordenPreferencia = listOf(2, 3, 0, 1)
+        val posicionAlejada = ordenPreferencia.firstOrNull { it in posicionesOcupadas }
+            ?: posicionesOcupadas.first()
+
+        return DecisionBot.ResolverAdelantado(posicionAEntregar = posicionAlejada)
+    }
+
+    // ─────────────────────────────────────────
     // INICIO DE TURNO
     // ─────────────────────────────────────────
 
@@ -62,6 +413,12 @@ object BotBrain {
         memoria: MemoriaBot,
         vista: VistaParcialSala
     ): DecisionBot {
+
+        // Caso defensivo: si soy el cantor y por algún motivo me dieron turno,
+        // intento pasar. TurnManager normalmente nos salta, pero protección extra.
+        if (vista.brataActivada && vista.brataJugadorId == vista.miId) {
+            return DecisionBot.PasarTurnoBrata
+        }
 
         // Si BRATA fue activada por otro y es mi turno, decidir si paso o juego
         if (vista.brataActivada && vista.brataJugadorId != vista.miId) {
@@ -227,8 +584,25 @@ object BotBrain {
         memoria: MemoriaBot,
         vista: VistaParcialSala
     ): Boolean {
+        // ── Modo agresivo de última ronda (Fase 4) ──
+        // Cuando hay BRATA activada y existe víctima óptima distinta de mí,
+        // los umbrales de activación bajan: el costo de no atacar es que la
+        // víctima sigue ganando.
+        val enUltimaRonda = esUltimaRonda(vista)
+        val victimaOptima = if (enUltimaRonda) encontrarVictimaOptima(memoria, vista) else null
+        val hayObjetivoOfensivo = victimaOptima != null && victimaOptima != vista.miId
+
         return when (tipoPoder) {
             TipoPoder.ESPIAR -> {
+                // En última ronda con objetivo claro: espiar la víctima si
+                // tiene desconocidas (la info habilita un CAMBIAR_VIENDO
+                // posterior con otra carta, o sirve para predecir su mano).
+                if (hayObjetivoOfensivo) {
+                    val tieneDesconocidas = victimaTieneDesconocidas(memoria, vista, victimaOptima!!)
+                    if (tieneDesconocidas) return true
+                    // Si ya conozco todo de la víctima, ESPIAR no aporta nada.
+                    // Mantengo la heurística defensiva normal:
+                }
                 if (tengoPosicionPropiaDesconocida(memoria, vista)) return true
                 if (tengoRivalConPosicionEnMesa(vista)) return true
                 false
@@ -239,7 +613,12 @@ object BotBrain {
                 if (!tengoRivalConPosicionEnMesa(vista)) return false
                 if (totalCartasEnMesa(vista) < 2) return false
 
-                // Heurística: solo activar si mi peor estimada vale ≥8
+                // En última ronda: activar siempre que haya víctima atacable.
+                // El A vale 20 puntos descartado, así que casi siempre vale
+                // más usarlo como ofensiva.
+                if (hayObjetivoOfensivo) return true
+
+                // Fuera de última ronda: solo activar si mi peor estimada vale ≥8
                 val miPeorEstimada = peorPosicionPropiaEstimada(memoria, vista)
                 miPeorEstimada >= 8
             }
@@ -248,12 +627,34 @@ object BotBrain {
                 // GameRules exige: ≥2 cartas en mesa total
                 if (totalCartasEnMesa(vista) < 2) return false
 
-                // Heurística: solo activar si tengo conocida ≥10
+                // En última ronda con víctima: activar si tengo algo "malo"
+                // que pueda sacrificar (carta propia ≥8 conocida).
+                // Sin algo malo conocido, J/Q a ciegas puede empeorar mi mano.
+                if (hayObjetivoOfensivo) {
+                    return tengoPosicionConocidaConValor(memoria, minimo = 8)
+                }
+
+                // Fuera de última ronda: solo activar si tengo conocida ≥10
                 tengoPosicionConocidaConValor(memoria, minimo = 10)
             }
 
             TipoPoder.DESCARTE_FREE_SELECCION,
             TipoPoder.NINGUNO -> false
+        }
+    }
+
+    /**
+     * ¿La víctima óptima tiene al menos una posición ocupada cuyo valor el
+     * bot no conoce todavía? Si todas son conocidas, espiarla es desperdicio.
+     */
+    private fun victimaTieneDesconocidas(
+        memoria: MemoriaBot,
+        vista: VistaParcialSala,
+        victimaId: String
+    ): Boolean {
+        val ocupadas = vista.posicionesOcupadasPorJugador[victimaId] ?: return false
+        return ocupadas.any { pos ->
+            BotMemory.obtenerCartaRivalConocida(memoria, victimaId, pos) == null
         }
     }
 
@@ -413,15 +814,49 @@ object BotBrain {
 
     /**
      * Política de elección de carta para ESPIAR:
-     *   1. Si tengo posición propia ocupada y desconocida → espiar la mía
-     *      (ganancia informativa para mí, sin riesgo).
-     *   2. Si no, espiar carta ajena desconocida (saber qué tiene el rival).
-     *   3. Si todo lo razonable lo conozco, espiar cualquier carta ajena.
+     *
+     * Fuera de última ronda:
+     *   1. Mi posición propia ocupada y desconocida (ganancia informativa
+     *      sin riesgo).
+     *   2. Carta ajena desconocida.
+     *   3. Cualquier carta ajena.
+     *
+     * En última ronda (Fase 4):
+     *   1. Víctima óptima: una posición DESCONOCIDA suya (preparo CAMBIAR_VIENDO
+     *      futuro o aprendo su mano para predicción).
+     *   2. Resto: política normal.
      */
     private fun elegirCartaParaEspiar(
         memoria: MemoriaBot,
         vista: VistaParcialSala
     ): CartaEspiable? {
+        // Última ronda: priorizar a la víctima óptima
+        if (esUltimaRonda(vista)) {
+            val victima = encontrarVictimaOptima(memoria, vista)
+            if (victima != null && victima != vista.miId) {
+                val ocupadas = vista.posicionesOcupadasPorJugador[victima] ?: emptySet()
+                // 1a. Una desconocida de la víctima
+                val posDesconocida = ocupadas.firstOrNull { pos ->
+                    BotMemory.obtenerCartaRivalConocida(memoria, victima, pos) == null
+                }
+                if (posDesconocida != null) {
+                    val cartaId = obtenerIdCartaRival(vista, victima, posDesconocida)
+                    if (cartaId != null) {
+                        return CartaEspiable(cartaId = cartaId, esPropia = false)
+                    }
+                }
+                // 1b. Cualquier carta de la víctima (todas conocidas → revalido)
+                val pos = ocupadas.firstOrNull()
+                if (pos != null) {
+                    val cartaId = obtenerIdCartaRival(vista, victima, pos)
+                    if (cartaId != null) {
+                        return CartaEspiable(cartaId = cartaId, esPropia = false)
+                    }
+                }
+            }
+        }
+
+        // Política normal (también fallback cuando víctima no aplica)
         // 1. Mi propia desconocida
         for (pos in listOf(2, 3, 0, 1)) {
             val estado = vista.miEstadoPosiciones[pos] ?: continue
@@ -519,14 +954,30 @@ object BotBrain {
 
     /**
      * Política de elección para CAMBIAR_VIENDO fase 1:
-     *   Buscar carta ajena que vale la pena espiar. Prioridad:
-     *   1. Rival con posición desconocida (info parcial sobre él).
-     *   2. Rival con posición conocida-alta (sé que vale mucho).
+     *
+     * Fuera de última ronda:
+     *   1. Rival con posición desconocida.
+     *   2. Rival con posición conocida-alta (≥10).
+     *   3. Fallback: primera ajena.
+     *
+     * En última ronda (Fase 4):
+     *   1. Víctima óptima: posición desconocida → conocida-alta → cualquier.
+     *   2. Resto: política normal.
      */
     private fun elegirCartaRivalParaCambiarViendo(
         memoria: MemoriaBot,
         vista: VistaParcialSala
     ): CartaEspiable? {
+        // Última ronda: priorizar víctima óptima
+        if (esUltimaRonda(vista)) {
+            val victima = encontrarVictimaOptima(memoria, vista)
+            if (victima != null && victima != vista.miId) {
+                val candidata = elegirEspiableEnRival(memoria, vista, victima)
+                if (candidata != null) return candidata
+            }
+        }
+
+        // Política normal
         // 1. Rival con desconocida
         for (rivalId in vista.rivalesActivos()) {
             val posicionesOcupadas = vista.posicionesOcupadasPorJugador[rivalId] ?: continue
@@ -560,23 +1011,75 @@ object BotBrain {
         return null
     }
 
+    /**
+     * Elige una carta espiable en la mesa de un rival específico.
+     * Orden: desconocida → conocida-alta (≥10) → primera ocupada.
+     * Helper para Fase 4 cuando ya tenemos un objetivo específico.
+     */
+    private fun elegirEspiableEnRival(
+        memoria: MemoriaBot,
+        vista: VistaParcialSala,
+        rivalId: String
+    ): CartaEspiable? {
+        val ocupadas = vista.posicionesOcupadasPorJugador[rivalId] ?: return null
+
+        // 1. Posición desconocida
+        for (pos in ocupadas) {
+            if (BotMemory.obtenerCartaRivalConocida(memoria, rivalId, pos) != null) continue
+            val cartaId = obtenerIdCartaRival(vista, rivalId, pos) ?: continue
+            return CartaEspiable(cartaId = cartaId, esPropia = false)
+        }
+
+        // 2. Posición conocida-alta
+        for (pos in ocupadas) {
+            val conocida = BotMemory.obtenerCartaRivalConocida(memoria, rivalId, pos) ?: continue
+            if (valorPuntos(conocida.valor, conocida.palo) >= 10) {
+                val cartaId = obtenerIdCartaRival(vista, rivalId, pos) ?: continue
+                return CartaEspiable(cartaId = cartaId, esPropia = false)
+            }
+        }
+
+        // 3. Cualquier ocupada
+        val pos = ocupadas.firstOrNull() ?: return null
+        val cartaId = obtenerIdCartaRival(vista, rivalId, pos) ?: return null
+        return CartaEspiable(cartaId = cartaId, esPropia = false)
+    }
+
     // ── CAMBIAR_SIN_VER (J, Q) ────────────────
 
     private fun decidirDuranteCambiarSinVer(
         memoria: MemoriaBot,
         vista: VistaParcialSala
     ): DecisionBot {
-        // Plan: intercambiar mi peor conocida (≥10) por una posición desconocida
-        // ajena, o por una propia desconocida si no hay ajena disponible.
+        // Umbral para considerar "vale la pena sacrificar mi peor":
+        //   - Última ronda: ≥8 (más agresivo).
+        //   - Resto: ≥10 (más conservador).
+        val umbralSacrificio = if (esUltimaRonda(vista)) 8 else 10
 
         val miPeor = peorCartaPropiaConocida(memoria) ?: return DecisionBot.NoOp
         val valorMiPeor = valorPuntos(miPeor.valor, miPeor.palo)
-        if (valorMiPeor < 10) return DecisionBot.NoOp
+        if (valorMiPeor < umbralSacrificio) return DecisionBot.NoOp
 
         val posMiPeor = posicionDePeorConocida(memoria) ?: return DecisionBot.NoOp
         val miCartaId = vista.miEstadoPosiciones[posMiPeor]?.cartaId ?: return DecisionBot.NoOp
 
-        // 1. Buscar posición desconocida en rivales
+        // Última ronda: priorizar víctima óptima
+        if (esUltimaRonda(vista)) {
+            val victima = encontrarVictimaOptima(memoria, vista)
+            if (victima != null && victima != vista.miId) {
+                val swapVictima = elegirObjetivoSinVerEnRival(memoria, vista, victima)
+                if (swapVictima != null) {
+                    return DecisionBot.ConfirmarSwapSinVer(
+                        jugadorAId = vista.miId,
+                        cartaAId = miCartaId,
+                        jugadorBId = victima,
+                        cartaBId = swapVictima
+                    )
+                }
+            }
+        }
+
+        // Política normal: buscar posición desconocida en cualquier rival
         for (rivalId in vista.rivalesActivos()) {
             val posicionesOcupadas = vista.posicionesOcupadasPorJugador[rivalId] ?: continue
             for (pos in posicionesOcupadas) {
@@ -591,7 +1094,7 @@ object BotBrain {
             }
         }
 
-        // 2. Si no hay desconocida ajena, buscar una posición propia desconocida
+        // Si no hay desconocida ajena, buscar una posición propia desconocida
         val miPosDesconocida = primeraPosicionPropiaDesconocida(memoria, vista)
         if (miPosDesconocida != null && miPosDesconocida != posMiPeor) {
             val cartaIdDestino = vista.miEstadoPosiciones[miPosDesconocida]?.cartaId
@@ -607,6 +1110,30 @@ object BotBrain {
 
         // Sin opción razonable
         return DecisionBot.NoOp
+    }
+
+    /**
+     * Elige una carta-objetivo para CAMBIAR_SIN_VER en la mesa del rival
+     * indicado: prefiere desconocida → cualquier ocupada. Devuelve el id de la
+     * carta o null.
+     */
+    private fun elegirObjetivoSinVerEnRival(
+        memoria: MemoriaBot,
+        vista: VistaParcialSala,
+        rivalId: String
+    ): String? {
+        val ocupadas = vista.posicionesOcupadasPorJugador[rivalId] ?: return null
+
+        // 1. Posición desconocida
+        for (pos in ocupadas) {
+            if (BotMemory.obtenerCartaRivalConocida(memoria, rivalId, pos) != null) continue
+            val cartaId = obtenerIdCartaRival(vista, rivalId, pos) ?: continue
+            return cartaId
+        }
+
+        // 2. Cualquier ocupada como fallback
+        val pos = ocupadas.firstOrNull() ?: return null
+        return obtenerIdCartaRival(vista, rivalId, pos)
     }
 
     // ── DESCARTE_FREE_SELECCION ───────────────
@@ -779,6 +1306,106 @@ object BotBrain {
     }
 
     // ─────────────────────────────────────────
+    // VÍCTIMA ÓPTIMA (Fase 4)
+    //
+    // Estima la puntuación total de cada rival activo y devuelve el id del
+    // rival con MENOR puntuación estimada (= el que va ganando = mejor víctima
+    // para sabotaje).
+    //
+    // Estimación por rival:
+    //   - Posiciones conocidas → valor real en puntos.
+    //   - Posiciones desconocidas ocupadas → VALOR_ESPERADO_DESCONOCIDA (6).
+    //   - Posiciones vacías → 0.
+    //
+    // Criterios de desempate:
+    //   1. Si hay cantor entre los candidatos empatados, ganar el cantor
+    //      (presunción de mano baja).
+    //   2. Si no, el de menos cartas en mesa.
+    //   3. Si sigue empate, el primero en orden de turno.
+    //
+    // Casos especiales:
+    //   - Si la víctima óptima soy yo (voy ganando), devuelve null. En última
+    //      ronda, esto significa "no ataques a nadie".
+    //   - Si no hay rivales activos, devuelve null.
+    // ─────────────────────────────────────────
+
+    private fun encontrarVictimaOptima(
+        memoria: MemoriaBot,
+        vista: VistaParcialSala
+    ): String? {
+        // Candidatos: yo + todos los rivales activos (incluyendo cantor si aplica)
+        val candidatos = vista.jugadoresOrden.filter { id ->
+            id !in vista.jugadoresDescalificados
+        }
+        if (candidatos.size < 2) return null
+
+        // Estimar puntuación por candidato
+        val puntuaciones = candidatos.associateWith { id ->
+            estimarManoDeJugador(memoria, vista, id)
+        }
+
+        val mejorPuntuacion = puntuaciones.values.min()
+        val empatados = puntuaciones.filterValues { it == mejorPuntuacion }.keys
+
+        // Si soy yo el único o el principal candidato → no ataco a nadie
+        if (vista.miId in empatados && empatados.size == 1) return null
+
+        // Si voy empatado con otro → preferir atacar al otro (yo no me ataco)
+        val empatadosSinMi = empatados.filter { it != vista.miId }
+        if (empatadosSinMi.isEmpty()) return null
+
+        // Desempate 1: si el cantor está entre los empatados, atacarlo
+        if (vista.brataActivada && vista.brataJugadorId in empatadosSinMi) {
+            return vista.brataJugadorId
+        }
+
+        // Desempate 2: el de menos cartas en mesa
+        val porCartas = empatadosSinMi.minByOrNull {
+            vista.cuentaCartasPorJugador[it] ?: 4
+        }
+        if (porCartas != null) return porCartas
+
+        // Desempate 3: primer empatado en orden de turno
+        return empatadosSinMi.first()
+    }
+
+    /**
+     * Estima la suma de puntos de la mano de un jugador específico, usando
+     * la memoria del bot para posiciones conocidas y VALOR_ESPERADO_DESCONOCIDA
+     * para las desconocidas/ocupadas.
+     */
+    private fun estimarManoDeJugador(
+        memoria: MemoriaBot,
+        vista: VistaParcialSala,
+        jugadorId: String
+    ): Int {
+        if (jugadorId == vista.miId) {
+            // Para mí mismo, uso estimarManoPropia (que ya cubre las propias)
+            return estimarManoPropia(memoria, vista)
+        }
+
+        val posicionesOcupadas = vista.posicionesOcupadasPorJugador[jugadorId] ?: emptySet()
+        var total = 0
+        posicionesOcupadas.forEach { pos ->
+            val conocida = BotMemory.obtenerCartaRivalConocida(memoria, jugadorId, pos)
+            total += if (conocida != null) {
+                valorPuntos(conocida.valor, conocida.palo)
+            } else {
+                VALOR_ESPERADO_DESCONOCIDA
+            }
+        }
+        return total
+    }
+
+    /**
+     * ¿Estamos en última ronda (brata activada por alguien)?
+     * Conveniencia para chequeos breves.
+     */
+    private fun esUltimaRonda(vista: VistaParcialSala): Boolean {
+        return vista.brataActivada
+    }
+
+    // ─────────────────────────────────────────
     // COMODÍN: elegir valor a declarar
     //
     // Estrategia simple (Fase 2A):
@@ -906,4 +1533,11 @@ object BotBrain {
     /** Valor esperado conservador de una posición desconocida.
      *  Promedio aproximado de una baraja considerando todos los valores. */
     private const val VALOR_ESPERADO_DESCONOCIDA = 6
+
+    /** Valor mínimo para que el bot descarte espontáneamente una carta propia
+     *  conocida que coincide con la cima del descarte. Por debajo de este
+     *  umbral, descartarla no aporta suficiente puntaje como para gastar el
+     *  "uso" de la cima y arriesgar errores. Un 2 vale 0 pts (no se descarta).
+     *  Un 3 vale 3 pts (sí, vale la pena). */
+    private const val UMBRAL_DESCARTE_ESPONTANEO_MIN = 3
 }

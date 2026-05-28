@@ -165,6 +165,12 @@ sealed class DecisionBot {
     data class EntregarCartaVoy(val posicion: Int) : DecisionBot()
     data class DescarteEspontaneo(val posicion: Int) : DecisionBot()
 
+    // ── Respuesta al adelantado (Fase 3B) ──
+    // El bot estaba ejecutando ESPIAR o CAMBIAR_VIENDO y un humano se le
+    // adelantó descartando espontáneamente. El bot debe ceder una carta
+    // propia al jugador adelantado (regla 5.4 del manual, lado del perjudicado).
+    data class ResolverAdelantado(val posicionAEntregar: Int) : DecisionBot()
+
     // ── Sin acción ──
     object NoOp : DecisionBot()
 }
@@ -205,7 +211,7 @@ fun DecisionBot.categoriaDelay(): CategoriaDelayBot = when (this) {
     is DecisionBot.ActivarDescarteFree,
     is DecisionBot.SeleccionarComodin,
     is DecisionBot.RobarDescarteAdelantado,
-    is DecisionBot.DescarteEspontaneo -> CategoriaDelayBot.ACCION_POST_ROBO
+    is DecisionBot.DescarteEspontaneo -> CategoriaDelayBot.REACCION_RAPIDA
 
     is DecisionBot.EspiarCarta,
     is DecisionBot.EspiarCartaCambioViendo,
@@ -218,6 +224,8 @@ fun DecisionBot.categoriaDelay(): CategoriaDelayBot = when (this) {
     is DecisionBot.EntregarCartaVoy -> CategoriaDelayBot.SELECCION_DURANTE_PODER
 
     is DecisionBot.ReclamarVoy -> CategoriaDelayBot.REACCION_RAPIDA
+
+    is DecisionBot.ResolverAdelantado -> CategoriaDelayBot.SELECCION_DURANTE_PODER
 
     is DecisionBot.NoOp -> CategoriaDelayBot.SIN_DELAY
 }
